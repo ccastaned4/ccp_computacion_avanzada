@@ -102,7 +102,7 @@ const materialModulo = new THREE.MeshStandardMaterial({
 
 // Agente que recorre el campo e influye en la altura de los modulos.
 const configuracionAgente = {
-  velocidad: 5.0,
+  velocidad: 10.0,
   radioInfluencia: 3.5,
   intensidad: 1.0,
   alturaMinima: 0.25,
@@ -125,7 +125,7 @@ pelota.position.y = radioPelota;
 pelota.castShadow = true;
 escena.add(pelota);
 
-// Segunda pelota: se mueve sola al doble de velocidad y rebota en los bordes.
+// Segunda pelota: se mueve sola y rebota en los bordes.
 const pelotaAutomatica = new THREE.Mesh(
   geometriaPelota,
   new THREE.MeshStandardMaterial({
@@ -158,15 +158,92 @@ const urlCancion =
 const reproductor = new Audio();
 reproductor.crossOrigin = "anonymous";
 reproductor.src = urlCancion;
-reproductor.controls = true;
+reproductor.controls = false;
 reproductor.loop = true;
 reproductor.preload = "metadata";
-reproductor.style.position = "fixed";
-reproductor.style.left = "20px";
-reproductor.style.bottom = "20px";
-reproductor.style.zIndex = "10";
-reproductor.style.maxWidth = "calc(100vw - 40px)";
 document.body.appendChild(reproductor);
+
+// Boton de bocina para encender o apagar la musica.
+const botonMusica = document.createElement("button");
+botonMusica.type = "button";
+botonMusica.setAttribute("aria-label", "Apagar musica");
+botonMusica.style.position = "fixed";
+botonMusica.style.left = "20px";
+botonMusica.style.bottom = "20px";
+botonMusica.style.zIndex = "10";
+botonMusica.style.width = "52px";
+botonMusica.style.height = "52px";
+botonMusica.style.border = "1px solid rgba(255, 255, 255, 0.35)";
+botonMusica.style.borderRadius = "50%";
+botonMusica.style.background = "rgba(10, 10, 12, 0.85)";
+botonMusica.style.color = "white";
+botonMusica.style.fontSize = "24px";
+botonMusica.style.cursor = "pointer";
+document.body.appendChild(botonMusica);
+
+// Mensaje de victoria creado desde JavaScript para no modificar el HTML.
+const mensajeVictoria = document.createElement("div");
+mensajeVictoria.textContent = "YOU WIN";
+mensajeVictoria.style.position = "fixed";
+mensajeVictoria.style.inset = "0";
+mensajeVictoria.style.zIndex = "20";
+mensajeVictoria.style.display = "none";
+mensajeVictoria.style.alignItems = "center";
+mensajeVictoria.style.justifyContent = "center";
+mensajeVictoria.style.background = "rgba(0, 0, 0, 0.55)";
+mensajeVictoria.style.color = "#ffffff";
+mensajeVictoria.style.font = "bold clamp(48px, 12vw, 150px) sans-serif";
+mensajeVictoria.style.letterSpacing = "0.08em";
+mensajeVictoria.style.textShadow = "0 0 30px #2080ff";
+mensajeVictoria.style.pointerEvents = "none";
+document.body.appendChild(mensajeVictoria);
+
+let juegoPausado = false;
+let musicaHabilitada = true;
+let musicaSonabaAntesVictoria = false;
+
+function comprobarColisionPelotas() {
+  const dx = pelota.position.x - pelotaAutomatica.position.x;
+  const dz = pelota.position.z - pelotaAutomatica.position.z;
+  const distanciaXZ = Math.sqrt(dx * dx + dz * dz);
+  const radioRojo = radioPelota * pelota.scale.x;
+  const radioAzul = radioPelota * pelotaAutomatica.scale.x;
+
+  return distanciaXZ <= radioRojo + radioAzul;
+}
+
+function mostrarVictoriaYReiniciar() {
+  juegoPausado = true;
+  mensajeVictoria.style.display = "flex";
+  musicaSonabaAntesVictoria = !reproductor.paused;
+  reproductor.pause();
+  actualizarBotonMusica();
+
+  window.setTimeout(() => {
+    const limiteX = ((parametros.columnas - 1) * parametros.separacion) / 2;
+    const limiteZ = ((parametros.filas - 1) * parametros.separacion) / 2;
+    const nuevoAngulo = Math.random() * Math.PI * 2;
+
+    pelota.position.set(0, radioPelota, 0);
+    objetivoPelota.set(0, 0, 0);
+    pelotaAutomatica.position.set(
+      limiteX * 0.75,
+      radioPelota,
+      limiteZ * 0.75
+    );
+    pelotaAutomatica.scale.setScalar(1);
+    direccionAutomatica.set(Math.cos(nuevoAngulo), Math.sin(nuevoAngulo));
+
+    // Regenera las alturas originales y comienza una nueva partida.
+    generarCampo();
+    mensajeVictoria.style.display = "none";
+    juegoPausado = false;
+
+    if (musicaSonabaAntesVictoria && musicaHabilitada) {
+      reproducirMusica();
+    }
+  }, 1500);
+}
 
 let contextoAudio = null;
 let analizadorAudio = null;
@@ -187,7 +264,59 @@ reproductor.addEventListener("play", () => {
   }
 
   contextoAudio.resume();
+  actualizarBotonMusica();
 });
+
+reproductor.addEventListener("pause", actualizarBotonMusica);
+
+function actualizarBotonMusica() {
+  const musicaSonando = !reproductor.paused;
+  botonMusica.textContent = musicaSonando ? "🔊" : "🔇";
+  botonMusica.setAttribute(
+    "aria-label",
+    musicaSonando ? "Apagar musica" : "Encender musica"
+  );
+}
+
+async function reproducirMusica() {
+  if (!musicaHabilitada || juegoPausado) {
+    return;
+  }
+
+  try {
+    await reproductor.play();
+  } catch {
+    // El navegador esperara la primera interaccion antes de permitir sonido.
+    actualizarBotonMusica();
+  }
+}
+
+botonMusica.addEventListener("click", () => {
+  musicaHabilitada = juegoPausado
+    ? !musicaHabilitada
+    : reproductor.paused;
+
+  if (musicaHabilitada) {
+    reproducirMusica();
+  } else {
+    reproductor.pause();
+  }
+
+  actualizarBotonMusica();
+});
+
+// Intenta reproducir al cargar y vuelve a intentarlo con el primer gesto.
+actualizarBotonMusica();
+reproducirMusica();
+window.addEventListener(
+  "pointerdown",
+  (event) => {
+    if (event.target !== botonMusica) {
+      reproducirMusica();
+    }
+  },
+  { once: true }
+);
 
 // Mide principalmente los graves, donde se concentra el pulso de la cancion.
 function actualizarEnergiaAudio() {
@@ -307,6 +436,10 @@ function limpiarCampo() {
 
 // Mueve la pelota hacia el mouse y deforma los modulos dentro de su radio.
 function actualizarAgente(delta) {
+  if (juegoPausado) {
+    return;
+  }
+
   const limiteX = ((parametros.columnas - 1) * parametros.separacion) / 2;
   const limiteZ = ((parametros.filas - 1) * parametros.separacion) / 2;
 
@@ -329,8 +462,8 @@ function actualizarAgente(delta) {
   pelota.position.x = THREE.MathUtils.clamp(pelota.position.x, -limiteX, limiteX);
   pelota.position.z = THREE.MathUtils.clamp(pelota.position.z, -limiteZ, limiteZ);
 
-  // La segunda pelota avanza al doble de velocidad.
-  const pasoAutomatico = configuracionAgente.velocidad * 2 * delta;
+  // La segunda pelota usa la misma velocidad que la pelota roja.
+  const pasoAutomatico = configuracionAgente.velocidad * delta;
   pelotaAutomatica.position.x += direccionAutomatica.x * pasoAutomatico;
   pelotaAutomatica.position.z += direccionAutomatica.y * pasoAutomatico;
 
@@ -371,6 +504,11 @@ function actualizarAgente(delta) {
     suavizado
   );
   pelotaAutomatica.scale.setScalar(escalaAutomatica);
+
+  if (comprobarColisionPelotas()) {
+    mostrarVictoriaYReiniciar();
+    return;
+  }
 
   let moduloMasCercano = null;
   let distanciaMasCercana = Infinity;
