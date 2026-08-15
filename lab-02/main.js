@@ -91,12 +91,198 @@ escena.add(grilla);
 const grupoCampo = new THREE.Group();
 escena.add(grupoCampo);
 
-const geometriaModulo = new THREE.BoxGeometry(0.76, 1, 0.76);
+// Cilindro base compartido por todas las torres.
+const geometriaModulo = new THREE.CylinderGeometry(0.38, 0.38, 1, 24);
 
 const materialModulo = new THREE.MeshStandardMaterial({
   color: 0xd7d2c8,
   roughness: 0.58,
   metalness: 0.03,
+});
+
+// Agente que recorre el campo e influye en la altura de los modulos.
+const configuracionAgente = {
+  velocidad: 5.0,
+  radioInfluencia: 3.5,
+  intensidad: 1.0,
+  alturaMinima: 0.25,
+  intensidadMusical: 4.0,
+};
+
+const radioPelota = 0.48;
+const geometriaPelota = new THREE.SphereGeometry(radioPelota, 32, 16);
+const pelota = new THREE.Mesh(
+  geometriaPelota,
+  new THREE.MeshStandardMaterial({
+    color: 0xff2020,
+    roughness: 0.35,
+    metalness: 0.05,
+  })
+);
+
+pelota.position.y = radioPelota;
+pelota.castShadow = true;
+escena.add(pelota);
+
+// Segunda pelota: se mueve sola al doble de velocidad y rebota en los bordes.
+const pelotaAutomatica = new THREE.Mesh(
+  geometriaPelota,
+  new THREE.MeshStandardMaterial({
+    color: 0x2080ff,
+    roughness: 0.35,
+    metalness: 0.05,
+  })
+);
+
+pelotaAutomatica.position.set(2, radioPelota, 2);
+pelotaAutomatica.castShadow = true;
+escena.add(pelotaAutomatica);
+
+const anguloInicial = Math.random() * Math.PI * 2;
+const direccionAutomatica = new THREE.Vector2(
+  Math.cos(anguloInicial),
+  Math.sin(anguloInicial)
+);
+
+const reloj = new THREE.Clock();
+const raycaster = new THREE.Raycaster();
+const posicionMouse = new THREE.Vector2();
+const objetivoPelota = new THREE.Vector3();
+const puntoInterseccion = new THREE.Vector3();
+const planoMovimiento = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+// Lista de canciones que comparten el mismo analizador de audio.
+const canciones = [
+  { nombre: "Cancion 1", archivo: "./audio/cancion.mp3" },
+  { nombre: "Cancion 2", archivo: "./audio/cancion2.mp3" },
+  { nombre: "Cancion 3", archivo: "./audio/cancion3.mp3" },
+  { nombre: "Cancion 4", archivo: "./audio/cancion4.mp3" },
+];
+
+let indiceCancion = 0;
+const reproductor = new Audio(canciones[indiceCancion].archivo);
+reproductor.controls = true;
+reproductor.preload = "metadata";
+reproductor.style.maxWidth = "calc(100vw - 40px)";
+
+// Interfaz de la lista creada desde JavaScript para no modificar el HTML.
+const contenedorReproductor = document.createElement("div");
+contenedorReproductor.style.position = "fixed";
+contenedorReproductor.style.left = "20px";
+contenedorReproductor.style.bottom = "20px";
+contenedorReproductor.style.zIndex = "10";
+contenedorReproductor.style.padding = "10px";
+contenedorReproductor.style.borderRadius = "10px";
+contenedorReproductor.style.background = "rgba(10, 10, 12, 0.85)";
+
+const controlesCancion = document.createElement("div");
+controlesCancion.style.display = "flex";
+controlesCancion.style.alignItems = "center";
+controlesCancion.style.justifyContent = "space-between";
+controlesCancion.style.gap = "10px";
+controlesCancion.style.marginBottom = "8px";
+
+const botonAnterior = document.createElement("button");
+botonAnterior.textContent = "Anterior";
+
+const tituloCancion = document.createElement("span");
+tituloCancion.style.color = "white";
+tituloCancion.style.fontFamily = "sans-serif";
+tituloCancion.style.fontSize = "13px";
+
+const botonSiguiente = document.createElement("button");
+botonSiguiente.textContent = "Siguiente";
+
+controlesCancion.append(botonAnterior, tituloCancion, botonSiguiente);
+contenedorReproductor.append(controlesCancion, reproductor);
+document.body.appendChild(contenedorReproductor);
+
+function actualizarTituloCancion() {
+  tituloCancion.textContent =
+    `${canciones[indiceCancion].nombre} (${indiceCancion + 1}/${canciones.length})`;
+}
+
+function cambiarCancion(desplazamiento) {
+  const estabaReproduciendo = !reproductor.paused;
+  indiceCancion =
+    (indiceCancion + desplazamiento + canciones.length) % canciones.length;
+
+  reproductor.src = canciones[indiceCancion].archivo;
+  reproductor.load();
+  actualizarTituloCancion();
+
+  // Si habia musica sonando, la nueva pista comienza inmediatamente.
+  if (estabaReproduciendo) {
+    reproductor.play();
+  }
+}
+
+botonAnterior.addEventListener("click", () => cambiarCancion(-1));
+botonSiguiente.addEventListener("click", () => cambiarCancion(1));
+reproductor.addEventListener("ended", () => cambiarCancion(1));
+actualizarTituloCancion();
+
+let contextoAudio = null;
+let analizadorAudio = null;
+let datosAudio = null;
+let energiaAudio = 0;
+
+// El navegador permite crear el analizador despues de una accion del usuario.
+reproductor.addEventListener("play", () => {
+  if (!contextoAudio) {
+    contextoAudio = new AudioContext();
+    analizadorAudio = contextoAudio.createAnalyser();
+    analizadorAudio.fftSize = 256;
+    datosAudio = new Uint8Array(analizadorAudio.frequencyBinCount);
+
+    const fuenteAudio = contextoAudio.createMediaElementSource(reproductor);
+    fuenteAudio.connect(analizadorAudio);
+    analizadorAudio.connect(contextoAudio.destination);
+  }
+
+  contextoAudio.resume();
+});
+
+// Mide principalmente los graves, donde se concentra el pulso de la cancion.
+function actualizarEnergiaAudio() {
+  if (!analizadorAudio || reproductor.paused) {
+    energiaAudio *= 0.9;
+    return;
+  }
+
+  analizadorAudio.getByteFrequencyData(datosAudio);
+  const cantidadGraves = Math.max(1, Math.floor(datosAudio.length * 0.2));
+  let sumaGraves = 0;
+
+  for (let indice = 0; indice < cantidadGraves; indice++) {
+    sumaGraves += datosAudio[indice];
+  }
+
+  const energiaObjetivo = sumaGraves / cantidadGraves / 255;
+
+  // Respuesta rapida al golpe y descenso suave entre pulsos.
+  const respuesta = energiaObjetivo > energiaAudio ? 0.45 : 0.12;
+  energiaAudio = THREE.MathUtils.lerp(
+    energiaAudio,
+    energiaObjetivo,
+    respuesta
+  );
+}
+
+// Convierte la posicion del cursor en un punto del plano XZ del campo.
+renderer.domElement.addEventListener("pointermove", (event) => {
+  const limitesViewport = renderer.domElement.getBoundingClientRect();
+
+  posicionMouse.x =
+    ((event.clientX - limitesViewport.left) / limitesViewport.width) * 2 - 1;
+  posicionMouse.y =
+    -((event.clientY - limitesViewport.top) / limitesViewport.height) * 2 + 1;
+
+  raycaster.setFromCamera(posicionMouse, camara);
+
+  if (raycaster.ray.intersectPlane(planoMovimiento, puntoInterseccion)) {
+    objetivoPelota.copy(puntoInterseccion);
+  }
 });
 
 // ======================================================
@@ -151,7 +337,10 @@ function generarCampo() {
       // Escalamos solo en Y para modificar la altura.
       modulo.scale.y = altura;
 
-      // BoxGeometry crece hacia arriba y hacia abajo desde su centro.
+      // Conservamos la altura generativa para poder volver suavemente a ella.
+      modulo.userData.alturaBase = altura;
+
+      // La geometría crece hacia arriba y hacia abajo desde su centro.
       // Por eso elevamos el módulo la mitad de su altura.
       modulo.position.set(x, altura / 2, z);
 
@@ -167,6 +356,146 @@ function generarCampo() {
 function limpiarCampo() {
   while (grupoCampo.children.length > 0) {
     grupoCampo.remove(grupoCampo.children[0]);
+  }
+}
+
+// Mueve la pelota hacia el mouse y deforma los modulos dentro de su radio.
+function actualizarAgente(delta) {
+  const limiteX = ((parametros.columnas - 1) * parametros.separacion) / 2;
+  const limiteZ = ((parametros.filas - 1) * parametros.separacion) / 2;
+
+  objetivoPelota.x = THREE.MathUtils.clamp(objetivoPelota.x, -limiteX, limiteX);
+  objetivoPelota.z = THREE.MathUtils.clamp(objetivoPelota.z, -limiteZ, limiteZ);
+
+  // Avanza hacia el cursor a una velocidad constante, sin saltos bruscos.
+  const distanciaX = objetivoPelota.x - pelota.position.x;
+  const distanciaZ = objetivoPelota.z - pelota.position.z;
+  const distanciaObjetivo = Math.sqrt(distanciaX * distanciaX + distanciaZ * distanciaZ);
+  const paso = configuracionAgente.velocidad * delta;
+
+  if (distanciaObjetivo > 0.001) {
+    const proporcion = Math.min(paso / distanciaObjetivo, 1);
+    pelota.position.x += distanciaX * proporcion;
+    pelota.position.z += distanciaZ * proporcion;
+  }
+
+  // La pelota permanece dentro de los limites actuales del campo.
+  pelota.position.x = THREE.MathUtils.clamp(pelota.position.x, -limiteX, limiteX);
+  pelota.position.z = THREE.MathUtils.clamp(pelota.position.z, -limiteZ, limiteZ);
+
+  // La segunda pelota avanza al doble de velocidad.
+  const pasoAutomatico = configuracionAgente.velocidad * 2 * delta;
+  pelotaAutomatica.position.x += direccionAutomatica.x * pasoAutomatico;
+  pelotaAutomatica.position.z += direccionAutomatica.y * pasoAutomatico;
+
+  // Al alcanzar un borde, se corrige la posicion y se invierte ese eje.
+  if (
+    pelotaAutomatica.position.x <= -limiteX ||
+    pelotaAutomatica.position.x >= limiteX
+  ) {
+    pelotaAutomatica.position.x = THREE.MathUtils.clamp(
+      pelotaAutomatica.position.x,
+      -limiteX,
+      limiteX
+    );
+    direccionAutomatica.x *= -1;
+  }
+
+  if (
+    pelotaAutomatica.position.z <= -limiteZ ||
+    pelotaAutomatica.position.z >= limiteZ
+  ) {
+    pelotaAutomatica.position.z = THREE.MathUtils.clamp(
+      pelotaAutomatica.position.z,
+      -limiteZ,
+      limiteZ
+    );
+    direccionAutomatica.y *= -1;
+  }
+
+  // Este factor mantiene la suavidad aunque cambie la tasa de fotogramas.
+  const suavizado = 1 - Math.exp(-7 * delta);
+  let moduloMasCercano = null;
+  let distanciaMasCercana = Infinity;
+  let moduloMasCercanoAutomatico = null;
+  let distanciaMasCercanaAutomatica = Infinity;
+
+  grupoCampo.children.forEach((modulo) => {
+    const dx = modulo.position.x - pelota.position.x;
+    const dz = modulo.position.z - pelota.position.z;
+    const distanciaManual = Math.sqrt(dx * dx + dz * dz);
+    const dxAutomatico = modulo.position.x - pelotaAutomatica.position.x;
+    const dzAutomatico = modulo.position.z - pelotaAutomatica.position.z;
+    const distanciaAutomatica = Math.sqrt(
+      dxAutomatico * dxAutomatico + dzAutomatico * dzAutomatico
+    );
+
+    if (distanciaManual < distanciaMasCercana) {
+      distanciaMasCercana = distanciaManual;
+      moduloMasCercano = modulo;
+    }
+
+    if (distanciaAutomatica < distanciaMasCercanaAutomatica) {
+      distanciaMasCercanaAutomatica = distanciaAutomatica;
+      moduloMasCercanoAutomatico = modulo;
+    }
+
+    // Se usa la pelota mas cercana para calcular la atraccion de cada torre.
+    const distancia = Math.min(distanciaManual, distanciaAutomatica);
+
+    const proximidad = THREE.MathUtils.clamp(
+      1 - distancia / configuracionAgente.radioInfluencia,
+      0,
+      1
+    );
+
+    // La curva cuadratica concentra la atraccion cerca de la pelota.
+    const influencia = proximidad * proximidad;
+    const atraccion = THREE.MathUtils.clamp(
+      influencia * configuracionAgente.intensidad,
+      0,
+      1
+    );
+
+    // Cerca del atractor la torre desciende; en el centro llega al nivel minimo.
+    // El ritmo modifica la amplitud de altura sin perder la forma generativa.
+    const alturaBaseMusical =
+      modulo.userData.alturaBase +
+      energiaAudio * configuracionAgente.intensidadMusical;
+    const alturaObjetivo = THREE.MathUtils.lerp(
+      alturaBaseMusical,
+      configuracionAgente.alturaMinima,
+      atraccion
+    );
+    const alturaActual = THREE.MathUtils.lerp(
+      modulo.scale.y,
+      alturaObjetivo,
+      suavizado
+    );
+
+    modulo.scale.y = alturaActual;
+    // Al centrar cada cilindro a media altura, su base permanece en y = 0.
+    modulo.position.y = alturaActual / 2;
+  });
+
+  // La pelota sigue la cima de la torre mas cercana y queda apoyada sobre ella.
+  if (moduloMasCercano) {
+    const alturaObjetivoPelota = moduloMasCercano.scale.y + radioPelota;
+    pelota.position.y = THREE.MathUtils.lerp(
+      pelota.position.y,
+      alturaObjetivoPelota,
+      suavizado
+    );
+  }
+
+  if (moduloMasCercanoAutomatico) {
+    const alturaObjetivoAutomatica =
+      moduloMasCercanoAutomatico.scale.y + radioPelota;
+    pelotaAutomatica.position.y = THREE.MathUtils.lerp(
+      pelotaAutomatica.position.y,
+      alturaObjetivoAutomatica,
+      suavizado
+    );
   }
 }
 
@@ -266,6 +595,10 @@ document.querySelector("#restablecer").addEventListener("click", () => {
 
 function animar() {
   requestAnimationFrame(animar);
+
+  const delta = Math.min(reloj.getDelta(), 0.1);
+  actualizarEnergiaAudio();
+  actualizarAgente(delta);
 
   controlesOrbita.update();
   renderer.render(escena, camara);
