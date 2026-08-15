@@ -107,6 +107,7 @@ const configuracionAgente = {
   intensidad: 1.0,
   alturaMinima: 0.25,
   intensidadMusical: 4.0,
+  escalaMusicalPelota: 1.8,
 };
 
 const radioPelota = 0.48;
@@ -151,76 +152,21 @@ const objetivoPelota = new THREE.Vector3();
 const puntoInterseccion = new THREE.Vector3();
 const planoMovimiento = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-// Lista de canciones que comparten el mismo analizador de audio.
-const canciones = [
-  { nombre: "Cancion 1", archivo: "./audio/cancion.mp3" },
-  { nombre: "Cancion 2", archivo: "./audio/cancion2.mp3" },
-  { nombre: "Cancion 3", archivo: "./audio/cancion3.mp3" },
-  { nombre: "Cancion 4", archivo: "./audio/cancion4.mp3" },
-];
-
-let indiceCancion = 0;
-const reproductor = new Audio(canciones[indiceCancion].archivo);
+// "Chill Beat" de Maddy, publicada bajo licencia CC0 en Wikimedia Commons.
+const urlCancion =
+  "https://upload.wikimedia.org/wikipedia/commons/9/9f/Chill_Beat.ogg";
+const reproductor = new Audio();
+reproductor.crossOrigin = "anonymous";
+reproductor.src = urlCancion;
 reproductor.controls = true;
+reproductor.loop = true;
 reproductor.preload = "metadata";
+reproductor.style.position = "fixed";
+reproductor.style.left = "20px";
+reproductor.style.bottom = "20px";
+reproductor.style.zIndex = "10";
 reproductor.style.maxWidth = "calc(100vw - 40px)";
-
-// Interfaz de la lista creada desde JavaScript para no modificar el HTML.
-const contenedorReproductor = document.createElement("div");
-contenedorReproductor.style.position = "fixed";
-contenedorReproductor.style.left = "20px";
-contenedorReproductor.style.bottom = "20px";
-contenedorReproductor.style.zIndex = "10";
-contenedorReproductor.style.padding = "10px";
-contenedorReproductor.style.borderRadius = "10px";
-contenedorReproductor.style.background = "rgba(10, 10, 12, 0.85)";
-
-const controlesCancion = document.createElement("div");
-controlesCancion.style.display = "flex";
-controlesCancion.style.alignItems = "center";
-controlesCancion.style.justifyContent = "space-between";
-controlesCancion.style.gap = "10px";
-controlesCancion.style.marginBottom = "8px";
-
-const botonAnterior = document.createElement("button");
-botonAnterior.textContent = "Anterior";
-
-const tituloCancion = document.createElement("span");
-tituloCancion.style.color = "white";
-tituloCancion.style.fontFamily = "sans-serif";
-tituloCancion.style.fontSize = "13px";
-
-const botonSiguiente = document.createElement("button");
-botonSiguiente.textContent = "Siguiente";
-
-controlesCancion.append(botonAnterior, tituloCancion, botonSiguiente);
-contenedorReproductor.append(controlesCancion, reproductor);
-document.body.appendChild(contenedorReproductor);
-
-function actualizarTituloCancion() {
-  tituloCancion.textContent =
-    `${canciones[indiceCancion].nombre} (${indiceCancion + 1}/${canciones.length})`;
-}
-
-function cambiarCancion(desplazamiento) {
-  const estabaReproduciendo = !reproductor.paused;
-  indiceCancion =
-    (indiceCancion + desplazamiento + canciones.length) % canciones.length;
-
-  reproductor.src = canciones[indiceCancion].archivo;
-  reproductor.load();
-  actualizarTituloCancion();
-
-  // Si habia musica sonando, la nueva pista comienza inmediatamente.
-  if (estabaReproduciendo) {
-    reproductor.play();
-  }
-}
-
-botonAnterior.addEventListener("click", () => cambiarCancion(-1));
-botonSiguiente.addEventListener("click", () => cambiarCancion(1));
-reproductor.addEventListener("ended", () => cambiarCancion(1));
-actualizarTituloCancion();
+document.body.appendChild(reproductor);
 
 let contextoAudio = null;
 let analizadorAudio = null;
@@ -415,6 +361,17 @@ function actualizarAgente(delta) {
 
   // Este factor mantiene la suavidad aunque cambie la tasa de fotogramas.
   const suavizado = 1 - Math.exp(-7 * delta);
+
+  // La pelota azul crece con los graves y vuelve suavemente a su escala normal.
+  const escalaObjetivoAutomatica =
+    1 + energiaAudio * configuracionAgente.escalaMusicalPelota;
+  const escalaAutomatica = THREE.MathUtils.lerp(
+    pelotaAutomatica.scale.x,
+    escalaObjetivoAutomatica,
+    suavizado
+  );
+  pelotaAutomatica.scale.setScalar(escalaAutomatica);
+
   let moduloMasCercano = null;
   let distanciaMasCercana = Infinity;
   let moduloMasCercanoAutomatico = null;
@@ -490,7 +447,8 @@ function actualizarAgente(delta) {
 
   if (moduloMasCercanoAutomatico) {
     const alturaObjetivoAutomatica =
-      moduloMasCercanoAutomatico.scale.y + radioPelota;
+      moduloMasCercanoAutomatico.scale.y +
+      radioPelota * pelotaAutomatica.scale.y;
     pelotaAutomatica.position.y = THREE.MathUtils.lerp(
       pelotaAutomatica.position.y,
       alturaObjetivoAutomatica,
