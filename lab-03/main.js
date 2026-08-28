@@ -34,6 +34,7 @@ async function cargarAuroras() {
 
     // NOAA entrega cada dato como [longitud, latitud, intensidad].
     crearCampoAuroras(datos.coordinates);
+    crearVistaInmersiva(datos.coordinates);
   } catch (error) {
     // Si NOAA no responde, la escena 3D continúa funcionando normalmente.
     console.error("No fue posible cargar los datos de auroras.", error);
@@ -46,6 +47,15 @@ escena.background = new THREE.Color(0x000000);
 
 const camara = new THREE.PerspectiveCamera(42, viewport.clientWidth / viewport.clientHeight, 0.1, 1000);
 camara.position.set(0, 0.7, 14);
+
+// Segunda escena: comparte el renderer, pero usa una camara a nivel del suelo.
+const escenaInmersiva = new THREE.Scene();
+escenaInmersiva.background = new THREE.Color(0x000000);
+const camaraInmersiva = new THREE.PerspectiveCamera(62, 1, 0.1, 100);
+// El maximo NOAA es el origen local: la camara parte en (0, 0, 0) y mira al cielo.
+camaraInmersiva.position.set(0, 0, 0);
+camaraInmersiva.up.set(0, 0, -1);
+camaraInmersiva.lookAt(0, 1, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -167,6 +177,18 @@ const OPACIDAD_MAXIMA_AURORA = 0.32;
 const BRILLO_MAXIMO_AURORA = 0.92;
 const EXPONENTE_INTENSIDAD = 1.5;
 let materialAurora;
+
+// Calibracion de la composicion dividida y de la aurora inmersiva.
+const PROPORCION_VISTA_GLOBAL = 0.5;
+const SEPARACION_VISTAS = 2;
+const DENSIDAD_AURORA_INMERSIVA = 3;
+const RADIO_REGION_INMERSIVA = 32;
+const SEGMENTOS_CURVA_INMERSIVA = 20;
+const ALTURA_MAXIMA_INMERSIVA = 4.8;
+const OPACIDAD_MAXIMA_INMERSIVA = 0.22;
+const BRILLO_MAXIMO_INMERSIVO = 0.88;
+let grupoAuroraInmersiva;
+let materialAuroraInmersiva;
 
 function crearCampoAurorasAnterior(coordenadas) {
   if (!Array.isArray(coordenadas)) {
@@ -489,6 +511,218 @@ function crearCampoAuroras(coordenadas) {
 
 function animarAuroras(tiempo) {
   if (materialAurora) materialAurora.uniforms.uTiempo.value = tiempo * 0.001;
+  if (materialAuroraInmersiva) {
+    materialAuroraInmersiva.uniforms.uTiempo.value = tiempo * 0.001;
+  }
+}
+
+function crearVistaInmersiva(coordenadas) {
+  if (grupoAuroraInmersiva) {
+    escenaInmersiva.remove(grupoAuroraInmersiva);
+    grupoAuroraInmersiva.traverse((objeto) => {
+      if (objeto.geometry) objeto.geometry.dispose();
+      if (objeto.material) objeto.material.dispose();
+    });
+  }
+
+  const posiciones = [];
+  const alturas = [];
+  const intensidades = [];
+  const fases = [];
+  const lados = [];
+  const indices = [];
+  // Mas subdivisiones producen cortinas curvas sin quiebres visibles.
+  const segmentos = SEGMENTOS_CURVA_INMERSIVA;
+
+  const coordenadasBoreales = coordenadas.filter(
+    (coordenada) =>
+      Array.isArray(coordenada) &&
+      coordenada.length >= 3 &&
+      coordenada.every(Number.isFinite) &&
+      coordenada[1] > 0 &&
+      coordenada[2] >= UMBRAL_AURORA
+  );
+
+  if (coordenadasBoreales.length === 0) return;
+
+  // La camara inmersiva se situa bajo el punto boreal mas intenso del NOAA actual.
+  const puntoMasIntenso = coordenadasBoreales.reduce((maximo, punto) =>
+    punto[2] > maximo[2] ? punto : maximo
+  );
+  const [longitudCentro, latitudCentro, intensidadMaxima] = puntoMasIntenso;
+  const cosenoLatitudCentro = Math.max(
+    0.18,
+    Math.cos(THREE.MathUtils.degToRad(latitudCentro))
+  );
+
+  function diferenciaLongitud(longitud) {
+    return ((longitud - longitudCentro + 540) % 360) - 180;
+  }
+
+  // Solo se proyecta la vecindad geografica del maximo; ocupa todo el cielo derecho.
+  const activos = coordenadasBoreales.filter((punto, indice) => {
+    const [longitud, latitud] = punto;
+    const esteOeste = diferenciaLongitud(longitud) * cosenoLatitudCentro;
+    const norteSur = latitud - latitudCentro;
+    return (
+      (punto === puntoMasIntenso || indice % DENSIDAD_AURORA_INMERSIVA === 0) &&
+      Math.hypot(esteOeste, norteSur) <= RADIO_REGION_INMERSIVA
+    );
+  });
+
+  const etiquetaInmersiva = document.querySelector(".view-label--immersive");
+  if (etiquetaInmersiva) {
+    const longitudVisible = longitudCentro > 180 ? longitudCentro - 360 : longitudCentro;
+    const hemisferioLongitud = longitudVisible < 0 ? "O" : "E";
+    etiquetaInmersiva.textContent =
+      `VISTA INMERSIVA · ${Math.abs(latitudCentro).toFixed(1)}°N · ` +
+      `${Math.abs(longitudVisible).toFixed(1)}°${hemisferioLongitud} · ` +
+      `INT. ${intensidadMaxima.toFixed(0)}`;
+  }
+
+  activos.forEach(([longitud, latitud, intensidad]) => {
+    const normalizada = THREE.MathUtils.clamp(
+      (intensidad - UMBRAL_AURORA) /
+        Math.max(1, intensidadMaxima - UMBRAL_AURORA),
+      0,
+      1
+    );
+    const respuesta = Math.pow(normalizada, EXPONENTE_INTENSIDAD);
+    const esteOeste = diferenciaLongitud(longitud) * cosenoLatitudCentro;
+    const norteSur = latitud - latitudCentro;
+    const x = (esteOeste / RADIO_REGION_INMERSIVA) * 11.5;
+    // El punto mas intenso queda exactamente sobre el origen local x=0, z=0.
+    const z = -(norteSur / RADIO_REGION_INMERSIVA) * 9;
+    const distanciaLocal = Math.hypot(esteOeste, norteSur) / RADIO_REGION_INMERSIVA;
+    // Altitud atmosferica local: ninguna cortina nace cerca o detras del observador.
+    const base = 4.6 + distanciaLocal * 0.9;
+    const alto = THREE.MathUtils.lerp(0.35, ALTURA_MAXIMA_INMERSIVA, respuesta);
+    const ancho = 0.08 + respuesta * 0.46;
+    const fase = THREE.MathUtils.degToRad(longitud * 2.3 + latitud * 3.1);
+    const primerVertice = posiciones.length / 3;
+
+    for (let nivel = 0; nivel <= segmentos; nivel += 1) {
+      const altura = nivel / segmentos;
+      const alturaSuave = altura * altura * (3 - 2 * altura);
+      const curva = Math.sin(alturaSuave * Math.PI) * 0.62;
+      const estrechamiento = 0.55 + Math.sin(alturaSuave * Math.PI) * 0.65;
+
+      for (const lado of [-1, 1]) {
+        const direccionAnchoX = Math.cos(fase);
+        const direccionAnchoZ = Math.sin(fase);
+        posiciones.push(
+          x +
+            lado * ancho * estrechamiento * direccionAnchoX +
+            curva * Math.sin(fase + alturaSuave * 1.7),
+          base + alto * alturaSuave,
+          z +
+            lado * ancho * estrechamiento * direccionAnchoZ +
+            curva * Math.cos(fase + alturaSuave * 1.7)
+        );
+        alturas.push(altura);
+        intensidades.push(respuesta);
+        fases.push(fase);
+        lados.push(lado);
+      }
+    }
+
+    for (let nivel = 0; nivel < segmentos; nivel += 1) {
+      const a = primerVertice + nivel * 2;
+      indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
+  });
+
+  const geometria = new THREE.BufferGeometry();
+  geometria.setAttribute("position", new THREE.Float32BufferAttribute(posiciones, 3));
+  geometria.setAttribute("aAltura", new THREE.Float32BufferAttribute(alturas, 1));
+  geometria.setAttribute("aIntensidad", new THREE.Float32BufferAttribute(intensidades, 1));
+  geometria.setAttribute("aFase", new THREE.Float32BufferAttribute(fases, 1));
+  geometria.setAttribute("aLado", new THREE.Float32BufferAttribute(lados, 1));
+  geometria.setIndex(indices);
+
+  materialAuroraInmersiva = new THREE.ShaderMaterial({
+    uniforms: {
+      uTiempo: { value: 0 },
+      uOpacidadMaxima: { value: OPACIDAD_MAXIMA_INMERSIVA },
+      uBrilloMaximo: { value: BRILLO_MAXIMO_INMERSIVO },
+    },
+    vertexShader: `
+      uniform float uTiempo;
+      attribute float aAltura;
+      attribute float aIntensidad;
+      attribute float aFase;
+      attribute float aLado;
+      varying float vAltura;
+      varying float vIntensidad;
+      varying float vLado;
+
+      void main() {
+        vAltura = aAltura;
+        vIntensidad = aIntensidad;
+        vLado = aLado;
+        vec3 animada = position;
+        float onda = sin(uTiempo * 0.46 + aFase + aAltura * 4.6);
+        float ondaLenta = sin(uTiempo * 0.19 + aFase * 0.7 + aAltura * 2.1);
+        float ondaSecundaria = sin(uTiempo * 0.31 - aFase * 0.45 + aAltura * 7.2);
+        animada.x += (onda * 0.18 + ondaLenta * 0.27 + ondaSecundaria * 0.07)
+          * aAltura * (0.45 + aIntensidad * 0.55);
+        animada.y += (ondaLenta + ondaSecundaria * 0.25) * aAltura * 0.09;
+        animada.z += (cos(uTiempo * 0.27 + aFase) * 0.07 + onda * 0.035) * aAltura;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(animada, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uOpacidadMaxima;
+      uniform float uBrilloMaximo;
+      varying float vAltura;
+      varying float vIntensidad;
+      varying float vLado;
+
+      void main() {
+        vec3 violeta = vec3(0.15, 0.09, 0.72);
+        vec3 verde = vec3(0.08, 0.82, 0.32);
+        vec3 magenta = vec3(0.78, 0.08, 0.32);
+        float recorridoColor = vAltura * mix(0.58, 1.0, vIntensidad);
+        vec3 colorBase = mix(violeta, verde, smoothstep(0.0, 0.48, recorridoColor));
+        vec3 color = mix(colorBase, magenta, smoothstep(0.58, 1.0, recorridoColor));
+        float bordeSuave = pow(max(0.0, 1.0 - abs(vLado)), 0.55);
+        float vertical = smoothstep(0.0, 0.1, vAltura)
+          * (1.0 - smoothstep(0.86, 1.0, vAltura));
+        float opacidad = bordeSuave * vertical
+          * mix(0.035, uOpacidadMaxima, vIntensidad);
+        vec3 colorLimitado = min(color * mix(0.5, uBrilloMaximo, vIntensidad), vec3(0.82));
+        gl_FragColor = vec4(colorLimitado, opacidad);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+
+  grupoAuroraInmersiva = new THREE.Group();
+  grupoAuroraInmersiva.add(new THREE.Mesh(geometria, materialAuroraInmersiva));
+
+  const estrellasPosiciones = [];
+  for (let i = 0; i < 320; i += 1) {
+    estrellasPosiciones.push(
+      THREE.MathUtils.randFloatSpread(24),
+      3 + Math.random() * 11,
+      THREE.MathUtils.randFloatSpread(20)
+    );
+  }
+  const estrellasGeometria = new THREE.BufferGeometry();
+  estrellasGeometria.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(estrellasPosiciones, 3)
+  );
+  grupoAuroraInmersiva.add(
+    new THREE.Points(
+      estrellasGeometria,
+      new THREE.PointsMaterial({ color: 0x7890a5, size: 0.025, transparent: true, opacity: 0.6 })
+    )
+  );
+  escenaInmersiva.add(grupoAuroraInmersiva);
 }
 
 function crearEstrellas() {
@@ -517,8 +751,12 @@ escena.add(crearEstrellas());
 function ajustarVentana() {
   const ancho = viewport.clientWidth;
   const altura = viewport.clientHeight;
-  camara.aspect = ancho / altura;
+  const anchoGlobal = ancho * PROPORCION_VISTA_GLOBAL - SEPARACION_VISTAS / 2;
+  const anchoInmersivo = ancho - anchoGlobal - SEPARACION_VISTAS;
+  camara.aspect = anchoGlobal / altura;
   camara.updateProjectionMatrix();
+  camaraInmersiva.aspect = anchoInmersivo / altura;
+  camaraInmersiva.updateProjectionMatrix();
   renderer.setSize(ancho, altura);
 }
 
@@ -526,11 +764,28 @@ function animar(tiempo = 0) {
   requestAnimationFrame(animar);
   animarAuroras(tiempo);
   controles.update();
+
+  const ancho = viewport.clientWidth;
+  const altura = viewport.clientHeight;
+  const anchoGlobal = Math.floor(
+    ancho * PROPORCION_VISTA_GLOBAL - SEPARACION_VISTAS / 2
+  );
+  const inicioInmersivo = anchoGlobal + SEPARACION_VISTAS;
+
+  renderer.setScissorTest(true);
+  renderer.setViewport(0, 0, anchoGlobal, altura);
+  renderer.setScissor(0, 0, anchoGlobal, altura);
   renderer.render(escena, camara);
+
+  renderer.setViewport(inicioInmersivo, 0, ancho - inicioInmersivo, altura);
+  renderer.setScissor(inicioInmersivo, 0, ancho - inicioInmersivo, altura);
+  renderer.render(escenaInmersiva, camaraInmersiva);
+  renderer.setScissorTest(false);
 }
 
 window.addEventListener("resize", ajustarVentana);
 
 // Consulta NOAA y genera el campo de auroras al iniciar el programa.
 cargarAuroras();
+ajustarVentana();
 animar();
