@@ -19,6 +19,33 @@
     <span id="global-location" class="view-location view-location--global maximum-location">Buscando ubicación...</span>
     <span class="view-label view-label--immersive">VISTA INMERSIVA</span>
     <span id="immersive-location" class="view-location view-location--immersive maximum-location">Buscando ubicación...</span>
+    <svg id="marker-callout-line" class="marker-callout-line" aria-hidden="true">
+      <polyline points="" />
+    </svg>
+    <div id="marker-callout" class="marker-callout" role="status" aria-live="polite">
+      <strong>Máximo auroral</strong>
+      <span id="marker-coordinates"></span>
+      <span id="marker-place">Buscando país o zona...</span>
+    </div>
+    <!-- leyenda interactiva de colores -->
+    <aside class="color-legend" aria-label="Significado de los colores de la aurora">
+      <div id="color-tooltip" class="color-tooltip" role="status" aria-live="polite" aria-hidden="true">
+        <div class="color-tooltip__heading">
+          <span id="color-tooltip-dot" class="color-tooltip__dot" aria-hidden="true"></span>
+          <strong id="color-tooltip-title"></strong>
+        </div>
+        <p id="color-tooltip-text"></p>
+        <small id="color-tooltip-secondary"></small>
+        <small id="color-tooltip-additional" class="color-tooltip__additional"></small>
+      </div>
+      <div class="color-legend__dots">
+        <!-- punto general del fenómeno -->
+        <button class="color-dot color-dot--neutral" type="button" data-color="phenomenon" aria-label="Información general sobre el fenómeno auroral" aria-expanded="false"></button>
+        <button class="color-dot color-dot--violet" type="button" data-color="violet" aria-label="Información del color violeta y azul" aria-expanded="false"></button>
+        <button class="color-dot color-dot--green" type="button" data-color="green" aria-label="Información del color verde" aria-expanded="false"></button>
+        <button class="color-dot color-dot--magenta" type="button" data-color="magenta" aria-label="Información del color rojo y magenta" aria-expanded="false"></button>
+      </div>
+    </aside>
     <aside class="data-card">
       <span class="status-dot" aria-hidden="true"></span>
       <div>
@@ -26,7 +53,7 @@
         <p id="noaa-update">Cargando fecha y hora de actualización...</p>
       </div>
     </aside>
-    <p class="hint">Arrastra para rotar · Rueda para acercar</p>
+    <p class="hint">Arrastra para rotar · Rueda para acercar · Pincha el punto blanco</p>
   </main>
 
   <script type="importmap">

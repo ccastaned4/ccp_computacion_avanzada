@@ -188,6 +188,63 @@ const contornoTierra = new THREE.Mesh(
 );
 escena.add(contornoTierra);
 
+async function crearFronterasPaises() {
+  try {
+    const respuesta = await fetch(
+      "https://cdn.jsdelivr.net/gh/datasets/geo-boundaries-world-110m@main/countries.geojson"
+    );
+    if (!respuesta.ok) throw new Error(`Fronteras: ${respuesta.status}`);
+    const geojson = await respuesta.json();
+    const posiciones = [];
+    const radioFronteras = RADIO_TIERRA + 0.045;
+
+    function agregarAnillo(anillo) {
+      for (let i = 1; i < anillo.length; i += 1) {
+        const [longitudA, latitudA] = anillo[i - 1];
+        const [longitudB, latitudB] = anillo[i];
+        // Evita unir visualmente los extremos opuestos del mapa en el antimeridiano.
+        if (Math.abs(longitudB - longitudA) > 180) continue;
+        for (const [longitud, latitud] of [anillo[i - 1], anillo[i]]) {
+          const longitudRad = THREE.MathUtils.degToRad(longitud);
+          const latitudRad = THREE.MathUtils.degToRad(latitud);
+          posiciones.push(
+            -Math.cos(latitudRad) * Math.cos(longitudRad) * radioFronteras,
+            Math.sin(latitudRad) * radioFronteras,
+            Math.cos(latitudRad) * Math.sin(longitudRad) * radioFronteras
+          );
+        }
+      }
+    }
+
+    geojson.features.forEach(({ geometry }) => {
+      if (!geometry) return;
+      const poligonos = geometry.type === "Polygon"
+        ? [geometry.coordinates]
+        : geometry.type === "MultiPolygon" ? geometry.coordinates : [];
+      poligonos.forEach((poligono) => poligono.forEach(agregarAnillo));
+    });
+
+    const geometria = new THREE.BufferGeometry();
+    geometria.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(posiciones, 3)
+    );
+    const fronteras = new THREE.LineSegments(
+      geometria,
+      new THREE.LineBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.48,
+        depthWrite: false,
+      })
+    );
+    fronteras.rotation.y = tierra.rotation.y;
+    escena.add(fronteras);
+  } catch (error) {
+    console.warn("No fue posible cargar las fronteras de los países.", error);
+  }
+}
+
 escena.add(new THREE.AmbientLight(0x385878, 0.55));
 const sol = new THREE.DirectionalLight(0xffffff, 3.8);
 sol.position.set(-5, 3, 8);
@@ -217,11 +274,101 @@ let grupoAuroraInmersiva;
 let materialAuroraInmersiva;
 let ultimaCoordenadaGeocodificada = "";
 let marcadorMaximaIntensidad;
+let anotacionMarcadorVisible = false;
+let textoUbicacionMarcador = "Buscando país o zona...";
+const raycasterMarcador = new THREE.Raycaster();
+const punteroMarcador = new THREE.Vector2();
+const elementoAnotacion = document.querySelector("#marker-callout");
+const elementoLineaAnotacion = document.querySelector("#marker-callout-line");
+const elementoCoordenadas = document.querySelector("#marker-coordinates");
+const elementoLugar = document.querySelector("#marker-place");
+
+// leyenda interactiva de colores
+const leyendaColores = document.querySelector(".color-legend");
+const tooltipColor = document.querySelector("#color-tooltip");
+const tituloTooltipColor = document.querySelector("#color-tooltip-title");
+const textoTooltipColor = document.querySelector("#color-tooltip-text");
+const secundarioTooltipColor = document.querySelector("#color-tooltip-secondary");
+const adicionalTooltipColor = document.querySelector("#color-tooltip-additional");
+let colorLeyendaActivo = null;
+
+const informacionColores = {
+  // contenido explicativo del fenómeno auroral
+  phenomenon: {
+    titulo: "Fenómeno",
+    texto: "La visualización representa la aurora como resultado de la interacción entre la actividad solar, el campo magnético terrestre y la atmósfera.",
+    secundario: "Las partículas energéticas provenientes del Sol son guiadas hacia las regiones polares, donde excitan gases como el oxígeno y el nitrógeno, produciendo emisiones luminosas visibles en el cielo.",
+    adicional: "En este proyecto, la posición muestra dónde ocurre la actividad auroral, la intensidad define su extensión y brillo, y el color interpreta distintas zonas de emisión atmosférica.",
+    color: "#53616b",
+  },
+  // información violeta / nitrógeno
+  violet: {
+    titulo: "Nitrógeno",
+    texto: "Las tonalidades violetas y azules están asociadas principalmente a emisiones de nitrógeno excitado por partículas energéticas provenientes del entorno espacial.",
+    secundario: "En nuestra visualización representa las zonas inferiores de la estructura auroral.",
+    color: "#4933e1",
+  },
+  // información verde / oxígeno
+  green: {
+    titulo: "Oxígeno · Emisión principal",
+    texto: "El verde es el color más característico de las auroras y se produce principalmente cuando partículas energéticas excitan átomos de oxígeno en la atmósfera.",
+    secundario: "En nuestra visualización corresponde a la zona media y más visible de la aurora.",
+    color: "#18d454",
+  },
+  // información rojo / oxígeno alta atmósfera
+  magenta: {
+    titulo: "Oxígeno · Mayor altitud",
+    texto: "Las emisiones rojizas pueden producirse cuando el oxígeno es excitado en regiones más altas y menos densas de la atmósfera.",
+    secundario: "En nuestra visualización representa las capas superiores de la aurora.",
+    color: "#d41455",
+  },
+};
+
+// apertura y cierre de tarjeta informativa
+function cerrarTooltipColor() {
+  colorLeyendaActivo = null;
+  tooltipColor.classList.remove("is-visible");
+  tooltipColor.setAttribute("aria-hidden", "true");
+  leyendaColores.querySelectorAll(".color-dot").forEach((boton) => {
+    boton.setAttribute("aria-expanded", "false");
+  });
+}
+
+leyendaColores.addEventListener("click", (evento) => {
+  const boton = evento.target.closest(".color-dot");
+  if (!boton) return;
+  evento.stopPropagation();
+  const color = boton.dataset.color;
+  if (color === colorLeyendaActivo) {
+    cerrarTooltipColor();
+    return;
+  }
+  const informacion = informacionColores[color];
+  colorLeyendaActivo = color;
+  tituloTooltipColor.textContent = informacion.titulo;
+  textoTooltipColor.textContent = informacion.texto;
+  secundarioTooltipColor.textContent = informacion.secundario;
+  adicionalTooltipColor.textContent = informacion.adicional ?? "";
+  tooltipColor.style.setProperty("--tooltip-color", informacion.color);
+  tooltipColor.classList.add("is-visible");
+  tooltipColor.setAttribute("aria-hidden", "false");
+  leyendaColores.querySelectorAll(".color-dot").forEach((elemento) => {
+    elemento.setAttribute("aria-expanded", String(elemento === boton));
+  });
+});
+
+// integración del cuarto punto en la leyenda interactiva
+
+document.addEventListener("click", (evento) => {
+  if (!leyendaColores.contains(evento.target)) cerrarTooltipColor();
+});
 
 function mostrarUbicacionMaxima(texto) {
   document.querySelectorAll(".maximum-location").forEach((elemento) => {
     elemento.textContent = texto;
   });
+  textoUbicacionMarcador = texto.replace(/ · © OpenStreetMap$/, "");
+  if (elementoLugar) elementoLugar.textContent = textoUbicacionMarcador;
 }
 
 function actualizarMarcadorMaximo(longitud, latitud) {
@@ -241,9 +388,15 @@ function actualizarMarcadorMaximo(longitud, latitud) {
         depthWrite: false,
       })
     );
-    marcadorMaximaIntensidad.add(punto, halo);
+    const areaClic = new THREE.Mesh(
+      new THREE.SphereGeometry(0.24, 12, 12),
+      new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+    );
+    marcadorMaximaIntensidad.add(punto, halo, areaClic);
     escena.add(marcadorMaximaIntensidad);
   }
+
+  marcadorMaximaIntensidad.userData.esMarcadorMaximo = true;
 
   const longitudRad = THREE.MathUtils.degToRad(longitud);
   const latitudRad = THREE.MathUtils.degToRad(latitud);
@@ -254,7 +407,66 @@ function actualizarMarcadorMaximo(longitud, latitud) {
   )
     .multiplyScalar(RADIO_TIERRA + 0.11)
     .applyAxisAngle(new THREE.Vector3(0, 1, 0), tierra.rotation.y);
+
+  const longitudVisible = longitud > 180 ? longitud - 360 : longitud;
+  const latitudFormateada = `${Math.abs(latitud).toFixed(2)}° ${latitud < 0 ? "S" : "N"}`;
+  const longitudFormateada = `${Math.abs(longitudVisible).toFixed(2)}° ${longitudVisible < 0 ? "O" : "E"}`;
+  if (elementoCoordenadas) {
+    elementoCoordenadas.textContent = `Lat. ${latitudFormateada} · Lon. ${longitudFormateada}`;
+  }
 }
+
+function actualizarAnotacionMarcador() {
+  if (!anotacionMarcadorVisible || !marcadorMaximaIntensidad) return;
+  const ancho = viewport.clientWidth;
+  const altura = viewport.clientHeight;
+  const anchoGlobal = ancho * PROPORCION_VISTA_GLOBAL - SEPARACION_VISTAS / 2;
+  const proyectado = marcadorMaximaIntensidad.position.clone().project(camara);
+  elementoLineaAnotacion.setAttribute("viewBox", `0 0 ${ancho} ${altura}`);
+  const x = (proyectado.x * 0.5 + 0.5) * anchoGlobal;
+  const y = (-proyectado.y * 0.5 + 0.5) * altura;
+  const anchoTarjeta = Math.min(210, Math.max(150, anchoGlobal - 24));
+  const tarjetaX = THREE.MathUtils.clamp(x + 42, 12, anchoGlobal - anchoTarjeta - 12);
+  const tarjetaY = THREE.MathUtils.clamp(y, 75, altura - 75);
+  const codoX = tarjetaX - 12;
+  elementoAnotacion.style.left = `${tarjetaX}px`;
+  elementoAnotacion.style.top = `${tarjetaY}px`;
+  elementoLineaAnotacion.querySelector("polyline").setAttribute(
+    "points",
+    `${x},${y} ${codoX},${tarjetaY} ${tarjetaX},${tarjetaY}`
+  );
+}
+
+function mostrarAnotacionMarcador(visible) {
+  anotacionMarcadorVisible = visible;
+  elementoAnotacion.classList.toggle("is-visible", visible);
+  elementoLineaAnotacion.classList.toggle("is-visible", visible);
+  if (visible) actualizarAnotacionMarcador();
+}
+
+let inicioPunteroMarcador;
+renderer.domElement.addEventListener("pointerdown", (evento) => {
+  inicioPunteroMarcador = { x: evento.clientX, y: evento.clientY };
+});
+
+renderer.domElement.addEventListener("pointerup", (evento) => {
+  if (!inicioPunteroMarcador || !marcadorMaximaIntensidad) return;
+  const desplazamiento = Math.hypot(
+    evento.clientX - inicioPunteroMarcador.x,
+    evento.clientY - inicioPunteroMarcador.y
+  );
+  inicioPunteroMarcador = null;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const xLocal = evento.clientX - rect.left;
+  const yLocal = evento.clientY - rect.top;
+  const anchoGlobal = rect.width * PROPORCION_VISTA_GLOBAL - SEPARACION_VISTAS / 2;
+  if (desplazamiento > 5 || xLocal < 0 || xLocal > anchoGlobal) return;
+  punteroMarcador.x = (xLocal / anchoGlobal) * 2 - 1;
+  punteroMarcador.y = -(yLocal / rect.height) * 2 + 1;
+  raycasterMarcador.setFromCamera(punteroMarcador, camara);
+  const acierto = raycasterMarcador.intersectObject(marcadorMaximaIntensidad, true).length > 0;
+  mostrarAnotacionMarcador(acierto ? !anotacionMarcadorVisible : false);
+});
 
 async function actualizarUbicacionInmersiva(latitud, longitud) {
   const longitudNormalizada = longitud > 180 ? longitud - 360 : longitud;
@@ -906,6 +1118,7 @@ function animar(tiempo = 0) {
   requestAnimationFrame(animar);
   animarAuroras(tiempo);
   controles.update();
+  actualizarAnotacionMarcador();
 
   const ancho = viewport.clientWidth;
   const altura = viewport.clientHeight;
@@ -928,6 +1141,7 @@ function animar(tiempo = 0) {
 window.addEventListener("resize", ajustarVentana);
 
 // Consulta NOAA y genera el campo de auroras al iniciar el programa.
+crearFronterasPaises();
 cargarAuroras();
 setInterval(cargarAuroras, INTERVALO_ACTUALIZACION_NOAA);
 ajustarVentana();
