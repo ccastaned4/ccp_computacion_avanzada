@@ -159,8 +159,16 @@ escena.add(sol);
 
 let grupoAuroras;
 const UMBRAL_AURORA = 5;
+const RADIO_TIERRA = 4;
+const SEGMENTOS_FILAMENTO = 6;
+// Controles de calibracion visual de la aurora.
+const ALTURA_MAXIMA_AURORA = 1.25;
+const OPACIDAD_MAXIMA_AURORA = 0.32;
+const BRILLO_MAXIMO_AURORA = 0.92;
+const EXPONENTE_INTENSIDAD = 1.5;
+let materialAurora;
 
-function crearCampoAuroras(coordenadas) {
+function crearCampoAurorasAnterior(coordenadas) {
   if (!Array.isArray(coordenadas)) {
     throw new Error("El campo coordinates de NOAA no es un arreglo.");
   }
@@ -234,8 +242,8 @@ function crearCampoAuroras(coordenadas) {
     capa.amplitudes.push(punto.amplitud);
     capa.fases.push(punto.fase);
 
-    const oscuro = new THREE.Color(punto.latitud >= 0 ? 0x123c2b : 0x421818);
-    const brillante = new THREE.Color(punto.latitud >= 0 ? 0x7dffc0 : 0xff7770);
+    const oscuro = new THREE.Color(0x241f78);
+    const brillante = new THREE.Color(0x58ff9a);
     const color = oscuro.lerp(brillante, punto.normalizada);
     capa.colores.push(color.r, color.g, color.b);
   }
@@ -297,7 +305,7 @@ function crearCampoAuroras(coordenadas) {
   escena.add(grupoAuroras);
 }
 
-function animarAuroras(tiempo) {
+function animarAurorasAnterior(tiempo) {
   if (!grupoAuroras) return;
 
   grupoAuroras.children.forEach((lineas) => {
@@ -315,6 +323,172 @@ function animarAuroras(tiempo) {
 
     lineas.geometry.attributes.position.needsUpdate = true;
   });
+}
+
+// Reemplaza la reticula de lineas por filamentos radiales. Al estar declarada
+// despues de la version anterior, esta es la implementacion que usa la carga NOAA.
+function crearCampoAuroras(coordenadas) {
+  if (!Array.isArray(coordenadas)) {
+    throw new Error("El campo coordinates de NOAA no es un arreglo.");
+  }
+
+  if (grupoAuroras) {
+    escena.remove(grupoAuroras);
+    grupoAuroras.traverse((objeto) => {
+      if (objeto.geometry) objeto.geometry.dispose();
+      if (objeto.material) objeto.material.dispose();
+    });
+  }
+
+  const puntosActivos = coordenadas.filter(
+    (coordenada) =>
+      Array.isArray(coordenada) &&
+      coordenada.length >= 3 &&
+      coordenada.every(Number.isFinite) &&
+      coordenada[2] >= UMBRAL_AURORA
+  );
+  const posiciones = [];
+  const normales = [];
+  const tangentes = [];
+  const alturas = [];
+  const intensidades = [];
+  const fases = [];
+  const indices = [];
+
+  puntosActivos.forEach(([longitud, latitud, intensidad]) => {
+    const longitudRad = THREE.MathUtils.degToRad(longitud);
+    const latitudRad = THREE.MathUtils.degToRad(latitud);
+
+    // 1. Conversion latitud/longitud: situa el dato NOAA sobre la esfera.
+    const normal = new THREE.Vector3(
+      -Math.cos(latitudRad) * Math.cos(longitudRad),
+      Math.sin(latitudRad),
+      Math.cos(latitudRad) * Math.sin(longitudRad)
+    ).normalize();
+
+    // 2. Direccion normal: el filamento crece desde el centro hacia afuera,
+    // nunca siguiendo simplemente el eje Y global.
+    const tangente = new THREE.Vector3(-normal.z, 0, normal.x);
+    if (tangente.lengthSq() < 0.0001) tangente.set(1, 0, 0);
+    tangente.normalize();
+
+    // intensidad NOAA normalizada
+    const intensidadNormalizada = THREE.MathUtils.clamp(
+      (intensidad - UMBRAL_AURORA) / 35,
+      0,
+      1
+    );
+    // extension radial segun intensidad: la curva acentua diferencias locales
+    // sin cambiar la posicion geografica ni la normal de crecimiento.
+    const respuesta = Math.pow(intensidadNormalizada, EXPONENTE_INTENSIDAD);
+    const alturaFilamento = THREE.MathUtils.lerp(0.025, ALTURA_MAXIMA_AURORA, respuesta);
+    const variacion = 0.94 + 0.1 * Math.sin(longitudRad * 7 + latitudRad * 11);
+    const ancho = (0.009 + respuesta * 0.035) * variacion;
+    const fase = longitudRad * 2.7 + latitudRad * 4.1;
+    const primerVertice = posiciones.length / 3;
+
+    for (let nivel = 0; nivel <= SEGMENTOS_FILAMENTO; nivel += 1) {
+      const alturaNormalizada = nivel / SEGMENTOS_FILAMENTO;
+      const radio = RADIO_TIERRA + 0.035 + alturaFilamento * alturaNormalizada;
+      const estrechamiento = Math.sin(alturaNormalizada * Math.PI) * 0.55 + 0.45;
+
+      for (const lado of [-1, 1]) {
+        const posicion = normal
+          .clone()
+          .multiplyScalar(radio)
+          .addScaledVector(tangente, lado * ancho * estrechamiento);
+        posiciones.push(posicion.x, posicion.y, posicion.z);
+        normales.push(normal.x, normal.y, normal.z);
+        tangentes.push(tangente.x, tangente.y, tangente.z);
+        alturas.push(alturaNormalizada);
+        intensidades.push(respuesta);
+        fases.push(fase);
+      }
+    }
+
+    for (let nivel = 0; nivel < SEGMENTOS_FILAMENTO; nivel += 1) {
+      const a = primerVertice + nivel * 2;
+      indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
+  });
+
+  const geometria = new THREE.BufferGeometry();
+  geometria.setAttribute("position", new THREE.Float32BufferAttribute(posiciones, 3));
+  geometria.setAttribute("aNormalRadial", new THREE.Float32BufferAttribute(normales, 3));
+  geometria.setAttribute("aTangente", new THREE.Float32BufferAttribute(tangentes, 3));
+  geometria.setAttribute("aAltura", new THREE.Float32BufferAttribute(alturas, 1));
+  geometria.setAttribute("aIntensidad", new THREE.Float32BufferAttribute(intensidades, 1));
+  geometria.setAttribute("aFase", new THREE.Float32BufferAttribute(fases, 1));
+  geometria.setIndex(indices);
+  geometria.computeBoundingSphere();
+
+  materialAurora = new THREE.ShaderMaterial({
+    uniforms: {
+      uTiempo: { value: 0 },
+      uOpacidadMaxima: { value: OPACIDAD_MAXIMA_AURORA },
+      uBrilloMaximo: { value: BRILLO_MAXIMO_AURORA },
+    },
+    vertexShader: `
+      uniform float uTiempo;
+      attribute vec3 aNormalRadial;
+      attribute vec3 aTangente;
+      attribute float aAltura;
+      attribute float aIntensidad;
+      attribute float aFase;
+      varying float vAltura;
+      varying float vIntensidad;
+
+      void main() {
+        vAltura = aAltura;
+        vIntensidad = aIntensidad;
+        float onda = sin(uTiempo * 0.7 + aFase + aAltura * 5.0);
+        vec3 animada = position;
+        animada += aTangente * onda * aAltura * (0.012 + aIntensidad * 0.035);
+        animada += aNormalRadial * onda * aAltura * (0.004 + aIntensidad * 0.012);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(animada, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying float vAltura;
+      varying float vIntensidad;
+      uniform float uOpacidadMaxima;
+      uniform float uBrilloMaximo;
+
+      void main() {
+        // gradiente cromatico segun altura, identico en norte y sur
+        vec3 violeta = vec3(0.15, 0.09, 0.72);
+        vec3 verde = vec3(0.08, 0.82, 0.32);
+        vec3 magenta = vec3(0.78, 0.08, 0.32);
+        float recorridoColor = vAltura * mix(0.58, 1.0, vIntensidad);
+        vec3 colorInferior = mix(violeta, verde, smoothstep(0.0, 0.48, recorridoColor));
+        vec3 color = mix(colorInferior, magenta, smoothstep(0.58, 1.0, recorridoColor));
+
+        // brillo segun intensidad
+        float desvanecido = smoothstep(0.0, 0.12, vAltura)
+          * (1.0 - smoothstep(0.82, 1.0, vAltura));
+        float opacidad = desvanecido * mix(0.045, uOpacidadMaxima, vIntensidad);
+        float brillo = mix(0.55, uBrilloMaximo, vIntensidad);
+
+        // limite para evitar saturacion blanca incluso con blending aditivo
+        vec3 colorLimitado = min(color * brillo, vec3(0.82));
+        gl_FragColor = vec4(colorLimitado, opacidad);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.DoubleSide,
+  });
+
+  grupoAuroras = new THREE.Group();
+  grupoAuroras.add(new THREE.Mesh(geometria, materialAurora));
+  grupoAuroras.rotation.y = tierra.rotation.y;
+  escena.add(grupoAuroras);
+}
+
+function animarAuroras(tiempo) {
+  if (materialAurora) materialAurora.uniforms.uTiempo.value = tiempo * 0.001;
 }
 
 function crearEstrellas() {
