@@ -6,8 +6,11 @@ html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#000
 #viewport canvas { display:block; width:100%; height:100%; }
 .view-divider { position:absolute; z-index:1; top:0; bottom:0; left:50%; width:2px; transform:translateX(-1px); background:linear-gradient(transparent,rgba(150,205,225,.32),transparent); pointer-events:none; }
 .view-label { position:absolute; z-index:2; top:34px; color:rgba(174,205,220,.58); font-size:9px; font-weight:700; letter-spacing:.18em; pointer-events:none; }
-.view-label--global { left:calc(50% - 132px); }
+.view-label--global { right:calc(50% + 28px); text-align:right; }
 .view-label--immersive { left:calc(50% + 28px); }
+.view-location { position:absolute; z-index:2; top:51px; max-width:calc(50% - 58px); overflow:hidden; color:rgba(174,205,220,.72); font-size:10px; line-height:1.35; text-overflow:ellipsis; white-space:nowrap; pointer-events:none; }
+.view-location--global { right:calc(50% + 28px); text-align:right; }
+.view-location--immersive { left:calc(50% + 28px); }
 .project-header { position:absolute; z-index:2; top:34px; left:40px; max-width:480px; pointer-events:none; }
 .eyebrow { margin:0 0 12px; color:var(--muted); font-size:10px; font-weight:700; letter-spacing:.18em; }
 h1 { margin:0 0 10px; font-size:clamp(38px,5vw,68px); font-weight:300; letter-spacing:-.05em; }
@@ -22,6 +25,9 @@ h1 { margin:0 0 10px; font-size:clamp(38px,5vw,68px); font-weight:300; letter-sp
   .data-card { right:20px; bottom:58px; width:calc(100% - 40px); }
   .hint { left:22px; bottom:24px; }
   .view-label { top:auto; bottom:18px; font-size:8px; }
-  .view-label--global { left:22px; }
+  .view-label--global { right:calc(50% + 18px); }
   .view-label--immersive { left:calc(50% + 18px); }
+  .view-location { top:auto; bottom:34px; max-width:calc(50% - 36px); font-size:8px; }
+  .view-location--global { right:calc(50% + 18px); }
+  .view-location--immersive { left:calc(50% + 18px); }
 }

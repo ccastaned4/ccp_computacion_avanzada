@@ -2,8 +2,31 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const URL_AURORAS = "https://services.swpc.noaa.gov/json/ovation_aurora_latest.json";
+const INTERVALO_ACTUALIZACION_NOAA = 5 * 60 * 1000;
+let cargaNoaaEnCurso = false;
+
+function actualizarFechaNoaa(datos) {
+  const elementoFecha = document.querySelector("#noaa-update");
+  if (!elementoFecha) return;
+
+  const fechaOriginal =
+    datos["Observation Time"] ?? datos["Forecast Time"] ?? "No disponible";
+  const fecha = new Date(fechaOriginal);
+  const fechaLegible = Number.isNaN(fecha.getTime())
+    ? fechaOriginal
+    : new Intl.DateTimeFormat("es-CL", {
+        dateStyle: "medium",
+        timeStyle: "medium",
+        timeZone: "America/Santiago",
+      }).format(fecha);
+
+  elementoFecha.textContent = `Última actualización NOAA: ${fechaLegible} (hora de Chile)`;
+}
 
 async function cargarAuroras() {
+  if (cargaNoaaEnCurso) return;
+  cargaNoaaEnCurso = true;
+
   try {
     // Obtiene el JSON público más reciente desde NOAA OVATION.
     const respuesta = await fetch(URL_AURORAS);
@@ -12,6 +35,7 @@ async function cargarAuroras() {
     }
 
     const datos = await respuesta.json();
+    actualizarFechaNoaa(datos);
     console.log("Datos completos de NOAA:", datos);
     console.log("Observation Time:", datos["Observation Time"]);
     console.log("Forecast Time:", datos["Forecast Time"]);
@@ -38,6 +62,8 @@ async function cargarAuroras() {
   } catch (error) {
     // Si NOAA no responde, la escena 3D continúa funcionando normalmente.
     console.error("No fue posible cargar los datos de auroras.", error);
+  } finally {
+    cargaNoaaEnCurso = false;
   }
 }
 
@@ -189,6 +215,107 @@ const OPACIDAD_MAXIMA_INMERSIVA = 0.22;
 const BRILLO_MAXIMO_INMERSIVO = 0.88;
 let grupoAuroraInmersiva;
 let materialAuroraInmersiva;
+let ultimaCoordenadaGeocodificada = "";
+let marcadorMaximaIntensidad;
+
+function mostrarUbicacionMaxima(texto) {
+  document.querySelectorAll(".maximum-location").forEach((elemento) => {
+    elemento.textContent = texto;
+  });
+}
+
+function actualizarMarcadorMaximo(longitud, latitud) {
+  if (!marcadorMaximaIntensidad) {
+    marcadorMaximaIntensidad = new THREE.Group();
+    const punto = new THREE.Mesh(
+      new THREE.SphereGeometry(0.085, 20, 20),
+      new THREE.MeshBasicMaterial({ color: 0xffffff })
+    );
+    const halo = new THREE.Mesh(
+      new THREE.SphereGeometry(0.135, 20, 20),
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.2,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+    );
+    marcadorMaximaIntensidad.add(punto, halo);
+    escena.add(marcadorMaximaIntensidad);
+  }
+
+  const longitudRad = THREE.MathUtils.degToRad(longitud);
+  const latitudRad = THREE.MathUtils.degToRad(latitud);
+  marcadorMaximaIntensidad.position.set(
+    -Math.cos(latitudRad) * Math.cos(longitudRad),
+    Math.sin(latitudRad),
+    Math.cos(latitudRad) * Math.sin(longitudRad)
+  )
+    .multiplyScalar(RADIO_TIERRA + 0.11)
+    .applyAxisAngle(new THREE.Vector3(0, 1, 0), tierra.rotation.y);
+}
+
+async function actualizarUbicacionInmersiva(latitud, longitud) {
+  const longitudNormalizada = longitud > 180 ? longitud - 360 : longitud;
+  const clave = `${latitud.toFixed(3)},${longitudNormalizada.toFixed(3)}`;
+  if (clave === ultimaCoordenadaGeocodificada) return;
+  ultimaCoordenadaGeocodificada = clave;
+  mostrarUbicacionMaxima("Buscando ciudad, región y país...");
+
+  const parametros = new URLSearchParams({
+    format: "jsonv2",
+    lat: String(latitud),
+    lon: String(longitudNormalizada),
+    zoom: "10",
+    addressdetails: "1",
+    "accept-language": "es",
+  });
+
+  try {
+    const respuesta = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?${parametros}`
+    );
+    if (!respuesta.ok) throw new Error(`Geocodificación: ${respuesta.status}`);
+
+    const resultado = await respuesta.json();
+    if (clave !== ultimaCoordenadaGeocodificada) return;
+    const direccion = resultado.address ?? {};
+    const tiposOceanicos = new Set(["ocean", "sea", "bay", "strait", "fjord", "water"]);
+    const esZonaOceanica =
+      Boolean(direccion.ocean || direccion.sea || direccion.water) ||
+      tiposOceanicos.has(resultado.type) ||
+      tiposOceanicos.has(resultado.addresstype);
+    const zonaOceanica =
+      direccion.ocean ??
+      direccion.sea ??
+      direccion.water ??
+      (esZonaOceanica ? resultado.name ?? resultado.display_name : null);
+
+    if (zonaOceanica) {
+      mostrarUbicacionMaxima(`${zonaOceanica} · © OpenStreetMap`);
+      return;
+    }
+
+    const ciudad =
+      direccion.city ??
+      direccion.town ??
+      direccion.village ??
+      direccion.municipality ??
+      direccion.hamlet ??
+      direccion.county ??
+      resultado.name ??
+      "Sin ciudad cercana";
+    const region = direccion.state ?? direccion.region ?? direccion.state_district ?? "Sin región";
+    const pais = direccion.country ?? "Zona oceánica o sin país";
+    mostrarUbicacionMaxima(`${ciudad} · ${region} · ${pais} · © OpenStreetMap`);
+  } catch (error) {
+    if (clave !== ultimaCoordenadaGeocodificada) return;
+    ultimaCoordenadaGeocodificada = "";
+    console.warn("No fue posible obtener la ubicación del máximo auroral.", error);
+    mostrarUbicacionMaxima("Ubicación remota sin localidad disponible · © OpenStreetMap");
+  }
+}
 
 function crearCampoAurorasAnterior(coordenadas) {
   if (!Array.isArray(coordenadas)) {
@@ -514,6 +641,10 @@ function animarAuroras(tiempo) {
   if (materialAuroraInmersiva) {
     materialAuroraInmersiva.uniforms.uTiempo.value = tiempo * 0.001;
   }
+  if (marcadorMaximaIntensidad) {
+    const pulso = 1 + Math.sin(tiempo * 0.003) * 0.12;
+    marcadorMaximaIntensidad.scale.setScalar(pulso);
+  }
 }
 
 function crearVistaInmersiva(coordenadas) {
@@ -550,6 +681,7 @@ function crearVistaInmersiva(coordenadas) {
     punto[2] > maximo[2] ? punto : maximo
   );
   const [longitudCentro, latitudCentro, intensidadMaxima] = puntoMasIntenso;
+  actualizarMarcadorMaximo(longitudCentro, latitudCentro);
   const cosenoLatitudCentro = Math.max(
     0.18,
     Math.cos(THREE.MathUtils.degToRad(latitudCentro))
@@ -579,6 +711,16 @@ function crearVistaInmersiva(coordenadas) {
       `${Math.abs(longitudVisible).toFixed(1)}°${hemisferioLongitud} · ` +
       `INT. ${intensidadMaxima.toFixed(0)}`;
   }
+  const etiquetaGlobal = document.querySelector(".view-label--global");
+  if (etiquetaGlobal) {
+    const longitudVisible = longitudCentro > 180 ? longitudCentro - 360 : longitudCentro;
+    const hemisferioLongitud = longitudVisible < 0 ? "O" : "E";
+    etiquetaGlobal.textContent =
+      `ESCALA GLOBAL · ${Math.abs(latitudCentro).toFixed(1)}°N · ` +
+      `${Math.abs(longitudVisible).toFixed(1)}°${hemisferioLongitud} · ` +
+      `INT. ${intensidadMaxima.toFixed(0)}`;
+  }
+  actualizarUbicacionInmersiva(latitudCentro, longitudCentro);
 
   activos.forEach(([longitud, latitud, intensidad]) => {
     const normalizada = THREE.MathUtils.clamp(
@@ -787,5 +929,6 @@ window.addEventListener("resize", ajustarVentana);
 
 // Consulta NOAA y genera el campo de auroras al iniciar el programa.
 cargarAuroras();
+setInterval(cargarAuroras, INTERVALO_ACTUALIZACION_NOAA);
 ajustarVentana();
 animar();
