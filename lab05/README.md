@@ -3,7 +3,7 @@
 Proyecto final · Computación Avanzada · MCD UAI · 2026
 
 Artefacto web colaborativo inspirado en el sistema MQTT de `lab-04`. Varias personas deforman en
-tiempo real una pieza que comienza como cilindro y crece como una impresión 3D: una capa por segundo
+tiempo real una pieza que comienza como cilindro, prisma cuadrado o prisma hexagonal y crece como una impresión 3D: una capa por segundo
 durante diez segundos. Al terminar, la interacción se congela y la malla puede descargarse como STL.
 
 ## Arquitectura: INPUT → REGLA → ESTADO → OUTPUT
@@ -26,12 +26,12 @@ OUTPUT
 
 ## Geometría
 
-La pieza comienza con una capa cilíndrica de radio `1`. Durante la sesión se agregan diez capas, una
-cada `1000 ms`, para un total de once capas visibles. Cada capa es un anillo de 48 vértices:
+Antes de iniciar se elige una sección circular (48 vértices), cuadrada (4) o hexagonal (6). Durante la
+sesión se agregan diez capas, una cada `1000 ms`, para un total de once capas visibles:
 
 ```text
 v(j) = (centroX + cos(θj)·radio, altura, centroZ + sin(θj)·radio)
-θj   = j / 48 · 2π
+θj   = j / número_de_vértices · 2π
 ```
 
 Los anillos consecutivos se unen mediante triángulos. La base y la tapa también se triangulan, por lo
@@ -68,7 +68,7 @@ La contraseña queda vacía y normalmente se introduce en la interfaz. Nunca deb
 Todos los mensajes viajan por `mcd/prueba` como JSON. Tipos utilizados:
 
 - `hola`: anuncia participantes y solicita sincronización.
-- `iniciar`: define identificador, creador y tiempo inicial de la sesión.
+- `iniciar`: define identificador, creador, tiempo inicial y geometría de la sesión.
 - `control`: comparte X, Z y radio de un participante.
 - `capa`: distribuye una capa consolidada.
 - `estado`: sincroniza a una persona que acaba de entrar.
@@ -84,7 +84,7 @@ prueba; la función aplica `JSON.stringify()` automáticamente.
 2. Abrir la URL en dos pestañas o dispositivos.
 3. Escribir nombres distintos y la misma contraseña MQTT.
 4. Conectar ambas personas.
-5. Iniciar la impresión desde una pestaña.
+5. Elegir la geometría inicial e iniciar la impresión desde una pestaña.
 6. Mover X, Z y radio en ambas durante diez segundos.
 7. Confirmar que ambas muestran la misma pieza terminada.
 8. Descargar el STL con **Exportar modelo STL**.
