@@ -15,9 +15,9 @@ const DURACION_MS = 10_000;
 const INTERVALO_CAPA_MS = 1_000;
 const CAPAS_NUEVAS = DURACION_MS / INTERVALO_CAPA_MS;
 const TOTAL_CAPAS = CAPAS_NUEVAS + 1;
-const ESPESOR_INICIAL = 0.42;
+const ALTURA_CAPA = 0.42;
+const SEGMENTOS_RADIALES = 48;
 const MAX_DESPLAZAMIENTO = 0.9;
-const SEGMENTOS_POR_FORMA = { circular: 48, cuadrada: 4, hexagonal: 6 };
 
 const $ = selector => document.querySelector(selector);
 const nombreInput = $("#nombre");
@@ -26,8 +26,10 @@ const botonConectar = $("#boton-conectar");
 const botonIniciar = $("#boton-iniciar");
 const botonExportar = $("#boton-exportar");
 const botonReiniciar = $("#boton-reiniciar");
-const controlEspesor = $("#control-espesor");
-const botonesForma = [...document.querySelectorAll(".forma")];
+const controlX = $("#control-x");
+const controlZ = $("#control-z");
+const controlRadio = $("#control-radio");
+const controlesDOM = [controlX, controlZ, controlRadio];
 
 $("#topic-eventos").textContent = TOPIC;
 
@@ -40,14 +42,12 @@ let inicioSesion = 0;
 let estadoSesion = "preparada";
 let relojCapas = null;
 let publicacionPendiente = false;
-let formaSeleccionada = "circular";
-const controlLocal = { x: 0, z: 0, radio: 1, espesor: ESPESOR_INICIAL };
 let capas = [capaInicial()];
 const participantes = new Map();
 const controlesParticipantes = new Map();
 
 function capaInicial() {
-  return { indice: 0, x: 0, z: 0, radio: 1, espesor: ESPESOR_INICIAL, y: ESPESOR_INICIAL };
+  return { indice: 0, x: 0, z: 0, radio: 1, y: ALTURA_CAPA };
 }
 
 botonConectar.addEventListener("click", conectar);
@@ -56,33 +56,21 @@ botonIniciar.addEventListener("click", () => publicar({
   sesionId: `${clientId}-${Date.now()}`,
   creador: clientId,
   inicio: Date.now(),
-  forma: formaSeleccionada,
 }));
 botonReiniciar.addEventListener("click", () => publicar({ tipo: "reinicio" }));
 botonExportar.addEventListener("click", exportarSTL);
 
-controlEspesor.addEventListener("input", () => {
-  controlLocal.espesor = Number(controlEspesor.value) / 100;
+controlesDOM.forEach(control => control.addEventListener("input", () => {
   actualizarSalidas();
   actualizarPreview();
-  programarPublicacionControl();
-});
-
-botonesForma.forEach(boton => boton.addEventListener("click", () => {
-  if (estadoSesion !== "preparada") return;
-  formaSeleccionada = boton.dataset.forma;
-  actualizarBotonesForma();
-  actualizarMalla();
+  if (!publicacionPendiente) {
+    publicacionPendiente = true;
+    requestAnimationFrame(() => {
+      publicacionPendiente = false;
+      publicarControl();
+    });
+  }
 }));
-
-function programarPublicacionControl() {
-  if (publicacionPendiente) return;
-  publicacionPendiente = true;
-  requestAnimationFrame(() => {
-    publicacionPendiente = false;
-    publicarControl();
-  });
-}
 
 function conectar() {
   nombre = nombreInput.value.trim();
@@ -142,7 +130,11 @@ function publicarControl() {
 }
 
 function leerControles() {
-  return { ...controlLocal };
+  return {
+    x: Number(controlX.value) / 100 * MAX_DESPLAZAMIENTO,
+    z: Number(controlZ.value) / 100 * MAX_DESPLAZAMIENTO,
+    radio: Number(controlRadio.value) / 100,
+  };
 }
 
 function procesarMensaje(topic, payload) {
@@ -184,13 +176,11 @@ function comenzarSesion(m) {
   sesionId = m.sesionId;
   creadorSesion = m.creador;
   inicioSesion = m.inicio;
-  formaSeleccionada = SEGMENTOS_POR_FORMA[m.forma] ? m.forma : "circular";
   estadoSesion = "imprimiendo";
   capas = [capaInicial()];
   controlesParticipantes.clear();
   controlesParticipantes.set(clientId, leerControles());
   actualizarMalla();
-  actualizarBotonesForma();
   habilitarControles(true);
   botonIniciar.disabled = botonExportar.disabled = true;
   botonReiniciar.disabled = false;
@@ -206,14 +196,12 @@ function iniciarRelojCapas() {
     while (capas.length - 1 < capasEsperadas) {
       const indice = capas.length;
       const promedio = promedioControles();
-      const anterior = capas.at(-1);
-      const nuevaCapa = { indice, ...promedio, y: anterior.y + promedio.espesor };
       publicar({
         tipo: "capa", sesionId,
-        capa: nuevaCapa,
+        capa: { indice, ...promedio, y: (indice + 1) * ALTURA_CAPA },
       });
       // Se agrega ahora para que un intervalo retrasado no publique dos veces el mismo índice.
-      recibirCapa(nuevaCapa);
+      recibirCapa({ indice, ...promedio, y: (indice + 1) * ALTURA_CAPA });
     }
     if (transcurrido >= DURACION_MS && capas.length >= TOTAL_CAPAS) {
       publicar({ tipo: "finalizar", sesionId });
@@ -226,12 +214,9 @@ function promedioControles() {
   const lista = [...controlesParticipantes.values()];
   if (!lista.length) return leerControles();
   const suma = lista.reduce((acc, valor) => ({
-    x: acc.x + valor.x, z: acc.z + valor.z, radio: acc.radio + valor.radio, espesor: acc.espesor + valor.espesor,
-  }), { x: 0, z: 0, radio: 0, espesor: 0 });
-  return {
-    x: suma.x / lista.length, z: suma.z / lista.length,
-    radio: suma.radio / lista.length, espesor: suma.espesor / lista.length,
-  };
+    x: acc.x + valor.x, z: acc.z + valor.z, radio: acc.radio + valor.radio,
+  }), { x: 0, z: 0, radio: 0 });
+  return { x: suma.x / lista.length, z: suma.z / lista.length, radio: suma.radio / lista.length };
 }
 
 function validarControl(control = {}) {
@@ -239,16 +224,12 @@ function validarControl(control = {}) {
     x: THREE.MathUtils.clamp(Number(control.x) || 0, -MAX_DESPLAZAMIENTO, MAX_DESPLAZAMIENTO),
     z: THREE.MathUtils.clamp(Number(control.z) || 0, -MAX_DESPLAZAMIENTO, MAX_DESPLAZAMIENTO),
     radio: THREE.MathUtils.clamp(Number(control.radio) || 1, 0.55, 1.45),
-    espesor: THREE.MathUtils.clamp(Number(control.espesor) || ESPESOR_INICIAL, 0.2, 0.65),
   };
 }
 
 function recibirCapa(capa) {
   if (!capa || !Number.isInteger(capa.indice) || capa.indice < 1 || capa.indice > CAPAS_NUEVAS) return;
-  const yAnterior = capas[capa.indice - 1]?.y;
-  if (!Number.isFinite(yAnterior)) return;
-  const control = validarControl(capa);
-  capas[capa.indice] = { indice: capa.indice, ...control, y: yAnterior + control.espesor };
+  capas[capa.indice] = { indice: capa.indice, ...validarControl(capa), y: (capa.indice + 1) * ALTURA_CAPA };
   capas = capas.filter(Boolean).sort((a, b) => a.indice - b.indice);
   actualizarMalla();
 }
@@ -283,7 +264,7 @@ function prepararSesion() {
 }
 
 function publicarEstadoCompleto(para) {
-  publicar({ tipo: "estado", para, sesionId, creador: creadorSesion, inicio: inicioSesion, estado: estadoSesion, forma: formaSeleccionada, capas });
+  publicar({ tipo: "estado", para, sesionId, creador: creadorSesion, inicio: inicioSesion, estado: estadoSesion, capas });
 }
 
 function recibirEstado(m) {
@@ -292,10 +273,8 @@ function recibirEstado(m) {
   creadorSesion = m.creador;
   inicioSesion = m.inicio;
   estadoSesion = m.estado;
-  formaSeleccionada = SEGMENTOS_POR_FORMA[m.forma] ? m.forma : "circular";
   capas = m.capas.map(capa => ({ ...capa, ...validarControl(capa) }));
   actualizarMalla();
-  actualizarBotonesForma();
   habilitarControles(estadoSesion === "imprimiendo");
   botonIniciar.disabled = true;
   botonExportar.disabled = estadoSesion !== "finalizada";
@@ -309,20 +288,13 @@ function detenerRelojCapas() {
 }
 
 function habilitarControles(activos) {
-  controlEspesor.disabled = !activos;
-  botonesForma.forEach(boton => { boton.disabled = estadoSesion !== "preparada"; });
+  controlesDOM.forEach(control => { control.disabled = !activos; });
 }
 
 function actualizarSalidas() {
-  $("#salida-espesor").value = controlLocal.espesor.toFixed(2);
-}
-
-function actualizarBotonesForma() {
-  botonesForma.forEach(boton => {
-    const activa = boton.dataset.forma === formaSeleccionada;
-    boton.classList.toggle("activa", activa);
-    boton.setAttribute("aria-pressed", String(activa));
-  });
+  $("#salida-x").value = leerControles().x.toFixed(2);
+  $("#salida-z").value = leerControles().z.toFixed(2);
+  $("#salida-radio").value = leerControles().radio.toFixed(2);
 }
 
 function actualizarParticipantes() {
@@ -337,11 +309,7 @@ function cambiarConexion(tipo, texto) {
 // ============================================================
 // GEOMETRÍA: anillos apilados que forman una malla cerrada.
 // ============================================================
-let escena, camara, renderer, controlesCamara, pieza, preview, asaControl;
-const raycasterControl = new THREE.Raycaster();
-const punteroControl = new THREE.Vector2();
-const planoControl = new THREE.Plane(new THREE.Vector3(0, 1, 0));
-let arrastrandoControl = false;
+let escena, camara, renderer, controlesCamara, pieza, preview;
 iniciarEscena();
 actualizarMalla();
 actualizarSalidas();
@@ -392,22 +360,9 @@ function iniciarEscena() {
     new THREE.LineBasicMaterial({ color: 0xd8d2c4, transparent: true, opacity: 0.8 }),
   );
   escena.add(preview);
-
-  asaControl = new THREE.Mesh(
-    new THREE.SphereGeometry(0.13, 20, 14),
-    new THREE.MeshStandardMaterial({ color: 0xf4e7bc, emissive: 0xd2b36d, emissiveIntensity: 1.2 }),
-  );
-  escena.add(asaControl);
-
-  renderer.domElement.addEventListener("pointerdown", iniciarArrastreControl);
-  renderer.domElement.addEventListener("pointermove", moverControl);
-  window.addEventListener("pointerup", terminarArrastreControl);
-  renderer.domElement.addEventListener("wheel", cambiarRadioConRueda, { passive: false });
 }
 
 function crearGeometria(listaCapas) {
-  const segmentos = SEGMENTOS_POR_FORMA[formaSeleccionada];
-  const desfase = formaSeleccionada === "cuadrada" ? Math.PI / 4 : 0;
   const anillos = [
     { ...listaCapas[0], y: 0 },
     ...listaCapas,
@@ -416,8 +371,8 @@ function crearGeometria(listaCapas) {
   const indices = [];
 
   anillos.forEach(anillo => {
-    for (let j = 0; j < segmentos; j++) {
-      const angulo = j / segmentos * Math.PI * 2 + desfase;
+    for (let j = 0; j < SEGMENTOS_RADIALES; j++) {
+      const angulo = j / SEGMENTOS_RADIALES * Math.PI * 2;
       posiciones.push(
         anillo.x + Math.cos(angulo) * anillo.radio,
         anillo.y,
@@ -427,12 +382,12 @@ function crearGeometria(listaCapas) {
   });
 
   for (let i = 0; i < anillos.length - 1; i++) {
-    for (let j = 0; j < segmentos; j++) {
-      const siguiente = (j + 1) % segmentos;
-      const a = i * segmentos + j;
-      const b = i * segmentos + siguiente;
-      const c = (i + 1) * segmentos + j;
-      const d = (i + 1) * segmentos + siguiente;
+    for (let j = 0; j < SEGMENTOS_RADIALES; j++) {
+      const siguiente = (j + 1) % SEGMENTOS_RADIALES;
+      const a = i * SEGMENTOS_RADIALES + j;
+      const b = i * SEGMENTOS_RADIALES + siguiente;
+      const c = (i + 1) * SEGMENTOS_RADIALES + j;
+      const d = (i + 1) * SEGMENTOS_RADIALES + siguiente;
       indices.push(a, c, b, b, c, d);
     }
   }
@@ -442,9 +397,9 @@ function crearGeometria(listaCapas) {
   const centroSuperior = posiciones.length / 3;
   const ultimo = anillos.at(-1);
   posiciones.push(ultimo.x, ultimo.y, ultimo.z);
-  const offsetSuperior = (anillos.length - 1) * segmentos;
-  for (let j = 0; j < segmentos; j++) {
-    const siguiente = (j + 1) % segmentos;
+  const offsetSuperior = (anillos.length - 1) * SEGMENTOS_RADIALES;
+  for (let j = 0; j < SEGMENTOS_RADIALES; j++) {
+    const siguiente = (j + 1) % SEGMENTOS_RADIALES;
     indices.push(centroInferior, siguiente, j);
     indices.push(centroSuperior, offsetSuperior + j, offsetSuperior + siguiente);
   }
@@ -467,65 +422,15 @@ function actualizarMalla() {
 function actualizarPreview() {
   if (!preview) return;
   const control = estadoSesion === "imprimiendo" ? promedioControles() : leerControles();
-  const y = capas.at(-1).y + control.espesor;
-  const segmentos = SEGMENTOS_POR_FORMA[formaSeleccionada];
-  const desfase = formaSeleccionada === "cuadrada" ? Math.PI / 4 : 0;
+  const y = Math.min((capas.length + 1) * ALTURA_CAPA, (TOTAL_CAPAS + 1) * ALTURA_CAPA);
   const puntos = [];
-  for (let j = 0; j < segmentos; j++) {
-    const angulo = j / segmentos * Math.PI * 2 + desfase;
+  for (let j = 0; j < SEGMENTOS_RADIALES; j++) {
+    const angulo = j / SEGMENTOS_RADIALES * Math.PI * 2;
     puntos.push(new THREE.Vector3(control.x + Math.cos(angulo) * control.radio, y, control.z + Math.sin(angulo) * control.radio));
   }
   preview.geometry.dispose();
   preview.geometry = new THREE.BufferGeometry().setFromPoints(puntos);
   preview.visible = estadoSesion !== "finalizada";
-  asaControl.position.set(controlLocal.x, y, controlLocal.z);
-  asaControl.visible = estadoSesion === "imprimiendo";
-}
-
-function actualizarRaycaster(evento) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  punteroControl.x = (evento.clientX - rect.left) / rect.width * 2 - 1;
-  punteroControl.y = -(evento.clientY - rect.top) / rect.height * 2 + 1;
-  raycasterControl.setFromCamera(punteroControl, camara);
-}
-
-function iniciarArrastreControl(evento) {
-  if (estadoSesion !== "imprimiendo") return;
-  actualizarRaycaster(evento);
-  if (!raycasterControl.intersectObject(asaControl, false).length) return;
-  arrastrandoControl = true;
-  controlesCamara.enabled = false;
-  $("#escena-impresion").classList.add("modelando");
-  renderer.domElement.setPointerCapture?.(evento.pointerId);
-  evento.preventDefault();
-}
-
-function moverControl(evento) {
-  if (!arrastrandoControl) return;
-  actualizarRaycaster(evento);
-  planoControl.constant = -asaControl.position.y;
-  const punto = new THREE.Vector3();
-  if (!raycasterControl.ray.intersectPlane(planoControl, punto)) return;
-  controlLocal.x = THREE.MathUtils.clamp(punto.x, -MAX_DESPLAZAMIENTO, MAX_DESPLAZAMIENTO);
-  controlLocal.z = THREE.MathUtils.clamp(punto.z, -MAX_DESPLAZAMIENTO, MAX_DESPLAZAMIENTO);
-  actualizarPreview();
-  programarPublicacionControl();
-  evento.preventDefault();
-}
-
-function terminarArrastreControl() {
-  if (!arrastrandoControl) return;
-  arrastrandoControl = false;
-  controlesCamara.enabled = true;
-  $("#escena-impresion").classList.remove("modelando");
-}
-
-function cambiarRadioConRueda(evento) {
-  if (estadoSesion !== "imprimiendo") return;
-  controlLocal.radio = THREE.MathUtils.clamp(controlLocal.radio + Math.sign(evento.deltaY) * -0.04, 0.55, 1.45);
-  actualizarPreview();
-  programarPublicacionControl();
-  evento.preventDefault();
 }
 
 function exportarSTL() {
