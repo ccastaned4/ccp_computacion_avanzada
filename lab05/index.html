@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bioimpresión en Tierra · Sistema Colectivo</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<main class="app">
+  <header class="encabezado">
+    <p class="eyebrow">COMPUTACIÓN AVANZADA · MCD UAI · PROYECTO FINAL</p>
+    <h1>Refuerzo Estructural Colectivo</h1>
+    <p class="bajada">Estructura XX impresa en tierra · hueso + colágeno + agua + tierra · input → regla → estado → output</p>
+  </header>
+
+  <section class="panel">
+    <div class="panel-titulo"><span>01</span><h2>Identidad y conexión</h2></div>
+    <label><span>Tu nombre</span><input id="nombre" type="text" placeholder="Ej: Ceci" autocomplete="name"></label>
+    <label><span>Contraseña MQTT</span><input id="contrasena" type="password" placeholder="Escribe la contraseña" autocomplete="off"></label>
+    <button id="boton-conectar">Conectar</button>
+    <div class="estado-conexion"><span id="estado-punto" class="estado-punto"></span><strong id="estado-texto">Desconectado</strong></div>
+    <div class="dato-grid">
+      <div><span>Client ID</span><code id="cliente-id">—</code></div>
+      <div><span>Canal de eventos</span><code id="topic-eventos">—</code></div>
+    </div>
+  </section>
+
+  <section class="panel panel-destacado">
+    <div class="panel-titulo"><span>02</span><h2>Métricas colectivas</h2></div>
+    <div class="metricas">
+      <div><span>Estabilidad global</span><strong id="m-estabilidad">—</strong></div>
+      <div><span>Zonas de riesgo alto</span><strong id="m-riesgo-alto">—</strong></div>
+      <div><span>Refuerzos aplicados</span><strong id="m-refuerzos">0</strong></div>
+      <div><span>Participantes</span><strong id="m-participantes">0</strong></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-titulo"><span>03</span><h2>Estructura XX</h2></div>
+    <p class="nota">
+      Dos módulos en forma de X, generados como pares de vigas curvas que se cruzan. Cada viga está dividida en
+      segmentos (zonas). El color indica el riesgo de falla por voladizo (verde = bajo, rojo = alto). Haz clic en
+      una zona para inspeccionarla.
+    </p>
+    <div id="escena-estructura" class="escena escena-grande"></div>
+  </section>
+
+  <section class="panel" id="panel-zona">
+    <div class="panel-titulo"><span>04</span><h2>Zona seleccionada</h2></div>
+    <div class="zona-vacia" id="zona-vacia">Haz clic en una zona de la estructura para inspeccionarla.</div>
+    <div class="zona-info" id="zona-info" hidden>
+      <div class="dato-grid dato-grid-4">
+        <div><span>Zona</span><code id="z-id">—</code></div>
+        <div><span>Ángulo de voladizo</span><strong id="z-angulo">—</strong></div>
+        <div><span>Altura</span><strong id="z-altura">—</strong></div>
+        <div><span>Riesgo</span><strong id="z-riesgo">—</strong></div>
+      </div>
+      <div class="dato-grid">
+        <div><span>Grosor actual</span><strong id="z-grosor">—</strong></div>
+        <div><span>Refuerzos aplicados</span><strong id="z-count">0</strong></div>
+      </div>
+      <button id="boton-reforzar" disabled>Reforzar con hueso + colágeno</button>
+      <button id="boton-reiniciar" class="boton-secundario" disabled>Reiniciar demo para todos</button>
+      <p class="nota" id="z-mensaje"></p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-titulo"><span>05</span><h2>Refuerzos recientes</h2></div>
+    <div class="refuerzos-cabecera"><span>Persona</span><span>Zona</span><span>Hora</span></div>
+    <div id="refuerzos-lista" class="refuerzos-lista"><p class="vacio">Todavía no hay refuerzos aplicados.</p></div>
+  </section>
+
+  <footer><p><strong>Idea central:</strong> geometría (ángulo + altura + grosor) → regla de riesgo → refuerzo colectivo vía MQTT → estabilidad global.</p></footer>
+</main>
+
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}
+</script>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
