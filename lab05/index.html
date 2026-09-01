@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bioimpresión en Tierra · Sistema Colectivo</title>
+  <title>Impresión Colectiva · MCD UAI</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
 </head>
@@ -11,69 +11,70 @@
 <main class="app">
   <header class="encabezado">
     <p class="eyebrow">COMPUTACIÓN AVANZADA · MCD UAI · PROYECTO FINAL</p>
-    <h1>Refuerzo Estructural Colectivo</h1>
-    <p class="bajada">Estructura XX impresa en tierra · hueso + colágeno + agua + tierra · input → regla → estado → output</p>
+    <h1>Impresión Colectiva</h1>
+    <p class="bajada">Diez segundos para modelar, capa por capa, una pieza de tierra compartida.</p>
   </header>
 
-  <section class="panel">
-    <div class="panel-titulo"><span>01</span><h2>Identidad y conexión</h2></div>
-    <label><span>Tu nombre</span><input id="nombre" type="text" placeholder="Ej: Ceci" autocomplete="name"></label>
-    <label><span>Contraseña MQTT</span><input id="contrasena" type="password" placeholder="Escribe la contraseña" autocomplete="off"></label>
+  <section class="panel conexion">
+    <div class="panel-titulo"><span>01</span><h2>Entrar a la impresión</h2></div>
+    <div class="campos-conexion">
+      <label><span>Tu nombre</span><input id="nombre" type="text" placeholder="Ej: Ceci" autocomplete="name"></label>
+      <label><span>Contraseña MQTT</span><input id="contrasena" type="password" placeholder="Contraseña del broker" autocomplete="off"></label>
+    </div>
     <button id="boton-conectar">Conectar</button>
     <div class="estado-conexion"><span id="estado-punto" class="estado-punto"></span><strong id="estado-texto">Desconectado</strong></div>
     <div class="dato-grid">
       <div><span>Client ID</span><code id="cliente-id">—</code></div>
-      <div><span>Canal de eventos</span><code id="topic-eventos">—</code></div>
+      <div><span>Canal colectivo</span><code id="topic-eventos">—</code></div>
     </div>
   </section>
 
-  <section class="panel panel-destacado">
-    <div class="panel-titulo"><span>02</span><h2>Métricas colectivas</h2></div>
-    <div class="metricas">
-      <div><span>Estabilidad global</span><strong id="m-estabilidad">—</strong></div>
-      <div><span>Zonas de riesgo alto</span><strong id="m-riesgo-alto">—</strong></div>
-      <div><span>Refuerzos aplicados</span><strong id="m-refuerzos">0</strong></div>
-      <div><span>Participantes</span><strong id="m-participantes">0</strong></div>
+  <section class="panel panel-modelado">
+    <div class="panel-titulo"><span>02</span><h2>Modelado en vivo</h2></div>
+    <div class="sesion-barra">
+      <div><span>Tiempo</span><strong id="tiempo">10.0 s</strong></div>
+      <div><span>Capas</span><strong id="capas">1 / 11</strong></div>
+      <div><span>Participantes</span><strong id="participantes">0</strong></div>
+      <div><span>Estado</span><strong id="estado-sesion">Preparada</strong></div>
+    </div>
+    <div class="progreso" aria-hidden="true"><span id="progreso"></span></div>
+
+    <div id="escena-impresion" class="escena" aria-label="Modelo tridimensional colectivo"></div>
+
+    <div class="controles">
+      <div class="control-fila">
+        <div><label for="control-x">Desplazamiento X</label><output id="salida-x">0.00</output></div>
+        <input id="control-x" type="range" min="-100" max="100" value="0" disabled>
+      </div>
+      <div class="control-fila">
+        <div><label for="control-z">Desplazamiento Z</label><output id="salida-z">0.00</output></div>
+        <input id="control-z" type="range" min="-100" max="100" value="0" disabled>
+      </div>
+      <div class="control-fila">
+        <div><label for="control-radio">Radio de la próxima capa</label><output id="salida-radio">1.00</output></div>
+        <input id="control-radio" type="range" min="55" max="145" value="100" disabled>
+      </div>
+    </div>
+
+    <p class="nota">Cada segundo se promedian los controles activos y se fija una nueva capa. La línea luminosa anticipa el siguiente punto de control.</p>
+    <div class="acciones">
+      <button id="boton-iniciar" disabled>Iniciar impresión de 10 segundos</button>
+      <button id="boton-exportar" class="boton-secundario" disabled>Exportar modelo STL</button>
+      <button id="boton-reiniciar" class="boton-terciario" disabled>Preparar nueva impresión</button>
     </div>
   </section>
 
   <section class="panel">
-    <div class="panel-titulo"><span>03</span><h2>Estructura XX</h2></div>
-    <p class="nota">
-      Dos módulos en forma de X, generados como pares de vigas curvas que se cruzan. Cada viga está dividida en
-      segmentos (zonas). El color indica el riesgo de falla por voladizo (verde = bajo, rojo = alto). Haz clic en
-      una zona para inspeccionarla.
-    </p>
-    <div id="escena-estructura" class="escena escena-grande"></div>
-  </section>
-
-  <section class="panel" id="panel-zona">
-    <div class="panel-titulo"><span>04</span><h2>Zona seleccionada</h2></div>
-    <div class="zona-vacia" id="zona-vacia">Haz clic en una zona de la estructura para inspeccionarla.</div>
-    <div class="zona-info" id="zona-info" hidden>
-      <div class="dato-grid dato-grid-4">
-        <div><span>Zona</span><code id="z-id">—</code></div>
-        <div><span>Ángulo de voladizo</span><strong id="z-angulo">—</strong></div>
-        <div><span>Altura</span><strong id="z-altura">—</strong></div>
-        <div><span>Riesgo</span><strong id="z-riesgo">—</strong></div>
-      </div>
-      <div class="dato-grid">
-        <div><span>Grosor actual</span><strong id="z-grosor">—</strong></div>
-        <div><span>Refuerzos aplicados</span><strong id="z-count">0</strong></div>
-      </div>
-      <button id="boton-reforzar" disabled>Reforzar con hueso + colágeno</button>
-      <button id="boton-reiniciar" class="boton-secundario" disabled>Reiniciar demo para todos</button>
-      <p class="nota" id="z-mensaje"></p>
+    <div class="panel-titulo"><span>03</span><h2>Cómo se genera la forma</h2></div>
+    <div class="reglas">
+      <div><b>INPUT</b><p>X, Z y radio enviados por cada participante.</p></div>
+      <div><b>REGLA</b><p>Promedio colectivo → punto central de la siguiente capa.</p></div>
+      <div><b>ESTADO</b><p>Una secuencia compartida de 11 anillos.</p></div>
+      <div><b>OUTPUT</b><p>Malla cerrada y exportable como STL.</p></div>
     </div>
   </section>
 
-  <section class="panel">
-    <div class="panel-titulo"><span>05</span><h2>Refuerzos recientes</h2></div>
-    <div class="refuerzos-cabecera"><span>Persona</span><span>Zona</span><span>Hora</span></div>
-    <div id="refuerzos-lista" class="refuerzos-lista"><p class="vacio">Todavía no hay refuerzos aplicados.</p></div>
-  </section>
-
-  <footer><p><strong>Idea central:</strong> geometría (ángulo + altura + grosor) → regla de riesgo → refuerzo colectivo vía MQTT → estabilidad global.</p></footer>
+  <footer><p>La forma no está dibujada de antemano: emerge de decisiones colectivas tomadas durante la impresión.</p></footer>
 </main>
 
 <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
