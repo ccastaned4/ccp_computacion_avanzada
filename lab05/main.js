@@ -1,488 +1,465 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { STLExporter } from "three/addons/exporters/STLExporter.js";
 
 // ============================================================
-// REFUERZO ESTRUCTURAL COLECTIVO
-// Bioimpresión 3D en tierra · hueso + colágeno + agua + tierra
-//
-// INPUT      → geometría de la estructura XX (ángulo, altura, grosor)
-// REGLAS     → riesgo por zona + refuerzo colectivo vía MQTT
-// ESTADO     → refuerzosPorZona (compartido entre todas las personas conectadas)
-// OUTPUT     → color/grosor de cada zona + estabilidad global de la estructura
-//
-// DATOS DE CONEXIÓN del deployment EMQX. La contraseña queda vacía para
-// completarla manualmente o ingresarla en la interfaz en tiempo de ejecución.
-// (ver Anexo · Crear un broker MQTT gratuito con EMQX Cloud). No subas la
-// contraseña al repositorio: se pide en la interfaz en tiempo de ejecución.
+// IMPRESIÓN COLECTIVA · CONFIGURACIÓN MQTT
 // ============================================================
 const BROKER = "wss://rd7b7d2a.ala.us-east-1.emqxsl.com:8084/mqtt";
 const USUARIO = "mcd_user";
-const CONTRASENA_MQTT = ""; // Escribe aquí la contraseña solo para pruebas locales. No la subas al repo.
-const TOPIC_PRUEBA = "mcd/prueba";
-const TOPIC_BASE = "uai/mcd/2026/proyecto-final/bioimpresion-tierra";
-const TOPIC_EVENTOS = `${TOPIC_BASE}/eventos/refuerzo`;
+const CONTRASENA_MQTT = ""; // Opcional para pruebas locales. No subas una contraseña real.
+const TOPIC = "mcd/prueba";
 
-// ------------------------------------------------------------
-// PARÁMETROS DEL SISTEMA (ajustables y explicables en la presentación)
-// ------------------------------------------------------------
-const ALTURA_TOTAL = 6;              // altura de referencia de la estructura (para normalizar)
-const ANGULO_REF = 70;               // ángulo de voladizo (°) considerado "riesgo máximo"
-const SEGMENTOS_POR_VIGA = 4;        // en cuántas zonas se divide cada viga
-const GROSOR_MIN = 0.09;
-const GROSOR_POR_REFUERZO = 0.035;
-const MAX_REFUERZOS_POR_ZONA = 4;
-const UMBRAL_RIESGO_ALTO = 0.55;
+// Una capa se consolida cada segundo durante diez segundos.
+const DURACION_MS = 10_000;
+const INTERVALO_CAPA_MS = 1_000;
+const CAPAS_NUEVAS = DURACION_MS / INTERVALO_CAPA_MS;
+const TOTAL_CAPAS = CAPAS_NUEVAS + 1;
+const ALTURA_CAPA = 0.42;
+const SEGMENTOS_RADIALES = 48;
+const MAX_DESPLAZAMIENTO = 0.9;
 
-// Ponderación de la REGLA 01: qué tan importante es cada factor en el riesgo.
-// Suman 1.0 para que el resultado quede entre 0 y 1.
-const PESO_ANGULO = 0.5;   // el ángulo de voladizo es el factor que más pesa
-const PESO_ALTURA = 0.3;   // el peso acumulado de capas superiores
-const PESO_GROSOR = 0.2;   // un elemento más grueso reduce el riesgo
+const $ = selector => document.querySelector(selector);
+const nombreInput = $("#nombre");
+const contrasenaInput = $("#contrasena");
+const botonConectar = $("#boton-conectar");
+const botonIniciar = $("#boton-iniciar");
+const botonExportar = $("#boton-exportar");
+const botonReiniciar = $("#boton-reiniciar");
+const controlX = $("#control-x");
+const controlZ = $("#control-z");
+const controlRadio = $("#control-radio");
+const controlesDOM = [controlX, controlZ, controlRadio];
 
-document.querySelector("#topic-eventos").textContent = TOPIC_EVENTOS;
+$("#topic-eventos").textContent = TOPIC;
 
-// ------------------------------------------------------------
-// DOM
-// ------------------------------------------------------------
-const nombreInput = document.querySelector("#nombre");
-const contrasenaInput = document.querySelector("#contrasena");
-const botonConectar = document.querySelector("#boton-conectar");
-const estadoPunto = document.querySelector("#estado-punto");
-const estadoTexto = document.querySelector("#estado-texto");
-const clienteIdTexto = document.querySelector("#cliente-id");
+let cliente = null;
+let clientId = null;
+let nombre = "";
+let sesionId = null;
+let creadorSesion = null;
+let inicioSesion = 0;
+let estadoSesion = "preparada";
+let relojCapas = null;
+let publicacionPendiente = false;
+let capas = [capaInicial()];
+const participantes = new Map();
+const controlesParticipantes = new Map();
 
-const zonaVacia = document.querySelector("#zona-vacia");
-const zonaInfo = document.querySelector("#zona-info");
-const zIdTexto = document.querySelector("#z-id");
-const zAnguloTexto = document.querySelector("#z-angulo");
-const zAlturaTexto = document.querySelector("#z-altura");
-const zRiesgoTexto = document.querySelector("#z-riesgo");
-const zGrosorTexto = document.querySelector("#z-grosor");
-const zCountTexto = document.querySelector("#z-count");
-const zMensaje = document.querySelector("#z-mensaje");
-const botonReforzar = document.querySelector("#boton-reforzar");
-const botonReiniciar = document.querySelector("#boton-reiniciar");
-
-const refuerzosLista = document.querySelector("#refuerzos-lista");
-
-let cliente, clientId, nombre;
-let zonaSeleccionada = null;
-let totalRefuerzos = 0;
-const participantes = new Set();
+function capaInicial() {
+  return { indice: 0, x: 0, z: 0, radio: 1, y: ALTURA_CAPA };
+}
 
 botonConectar.addEventListener("click", conectar);
-botonReforzar.addEventListener("click", () => {
-  if (zonaSeleccionada) publicarRefuerzo(zonaSeleccionada);
-});
-botonReiniciar.addEventListener("click", () => {
-  if (cliente?.connected && window.confirm("¿Reiniciar todas las zonas para todas las personas conectadas?")) publicarReinicio();
-});
+botonIniciar.addEventListener("click", () => publicar({
+  tipo: "iniciar",
+  sesionId: `${clientId}-${Date.now()}`,
+  creador: clientId,
+  inicio: Date.now(),
+}));
+botonReiniciar.addEventListener("click", () => publicar({ tipo: "reinicio" }));
+botonExportar.addEventListener("click", exportarSTL);
+
+controlesDOM.forEach(control => control.addEventListener("input", () => {
+  actualizarSalidas();
+  actualizarPreview();
+  if (!publicacionPendiente) {
+    publicacionPendiente = true;
+    requestAnimationFrame(() => {
+      publicacionPendiente = false;
+      publicarControl();
+    });
+  }
+}));
 
 function conectar() {
   nombre = nombreInput.value.trim();
-  const contrasena = CONTRASENA_MQTT || contrasenaInput.value;
-  if (!nombre || !contrasena) return cambiarEstadoConexion("error", "Falta nombre o contraseña");
-  if (BROKER.includes("TU-HOST") || USUARIO === "TU-USUARIO") {
-    return cambiarEstadoConexion("error", "Falta configurar Host y Username de EMQX en main.js");
-  }
+  const password = CONTRASENA_MQTT || contrasenaInput.value;
+  if (!nombre || !password) return cambiarConexion("error", "Falta nombre o contraseña");
+  if (!window.mqtt) return cambiarConexion("error", "No se pudo cargar MQTT.js");
 
-  const slug = nombre.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "usuario";
-  const idCorto = Math.random().toString(16).slice(2, 6).toUpperCase();
-  clientId = `navegador-${slug}-${idCorto}`;
-  clienteIdTexto.textContent = clientId;
-
+  const slug = nombre.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "usuario";
+  clientId = `impresora-${slug}-${Math.random().toString(16).slice(2, 6).toUpperCase()}`;
+  $("#cliente-id").textContent = clientId;
   nombreInput.disabled = contrasenaInput.disabled = botonConectar.disabled = true;
-  cambiarEstadoConexion("conectando", "Conectando…");
+  cambiarConexion("conectando", "Conectando…");
 
-  cliente = window.mqtt.connect(BROKER, { clientId, username: USUARIO, password: contrasena, reconnectPeriod: 2000, connectTimeout: 10000, clean: true });
+  cliente = window.mqtt.connect(BROKER, {
+    clientId, username: USUARIO, password, clean: true,
+    reconnectPeriod: 2_000, connectTimeout: 10_000,
+  });
 
   cliente.on("connect", () => {
     console.log("Estado de conexión MQTT: conectado");
-    cambiarEstadoConexion("conectado", "Conectado a EMQX");
+    cambiarConexion("conectado", "Conectado a EMQX");
     botonConectar.textContent = "Conectado ✓";
     botonConectar.classList.add("conectado");
+    botonIniciar.disabled = estadoSesion !== "preparada";
     botonReiniciar.disabled = false;
-    participantes.add(clientId);
-    actualizarParticipantes();
-    if (zonaSeleccionada) botonReforzar.disabled = false;
-    cliente.subscribe([TOPIC_EVENTOS, TOPIC_PRUEBA], error => {
-      if (error) {
-        console.error("Error al suscribirse:", error);
-        cambiarEstadoConexion("error", "Conectado, pero no fue posible suscribirse al canal");
-        return;
-      }
-      publicarHola();
+    cliente.subscribe(TOPIC, error => {
+      if (error) return cambiarConexion("error", "Conectado, pero sin acceso al canal MQTT");
+      publicar({ tipo: "hola" });
     });
   });
-
-  cliente.on("message", (topic, payload) => {
-    if (topic === TOPIC_PRUEBA) registrarMensajeMQTT(topic, payload);
-    if (topic === TOPIC_EVENTOS) procesarEvento(payload);
-  });
-  cliente.on("reconnect", () => {
-    console.log("Estado de conexión MQTT: reconectando");
-    cambiarEstadoConexion("conectando", "Reconectando…");
-  });
-  cliente.on("offline", () => {
-    console.log("Estado de conexión MQTT: sin conexión");
-    botonReforzar.disabled = true;
-    botonReiniciar.disabled = true;
-    cambiarEstadoConexion("error", "Sin conexión; se intentará reconectar");
-  });
+  cliente.on("message", (topic, payload) => procesarMensaje(topic, payload));
+  cliente.on("reconnect", () => cambiarConexion("conectando", "Reconectando…"));
+  cliente.on("offline", () => cambiarConexion("error", "Sin conexión; intentando reconectar"));
   cliente.on("error", error => {
     console.error("Estado de conexión MQTT: error", error);
-    const detalle = /not authorized|bad user|password|connack/i.test(error.message)
-      ? "Usuario o contraseña MQTT incorrectos"
-      : `No se pudo conectar: ${error.message || "revisa el Host y tu conexión"}`;
-    cambiarEstadoConexion("error", detalle);
+    cambiarConexion("error", /not authorized|password|connack/i.test(error.message)
+      ? "Usuario o contraseña MQTT incorrectos" : `Error MQTT: ${error.message}`);
   });
 }
 
-function registrarMensajeMQTT(topic, payload) {
-  const mensaje = payload.toString();
-  console.log("Topic:", topic);
-  console.log("Mensaje recibido:", mensaje);
-  try {
-    console.log("JSON parseado:", JSON.parse(mensaje));
-  } catch {
-    console.log("JSON parseado: el mensaje no contiene JSON válido");
-  }
-}
-
-function publicarMQTT(datos) {
-  if (!cliente?.connected) {
-    console.error("Estado de conexión MQTT: no conectado; no se pudo publicar");
-    return false;
-  }
-  cliente.publish(TOPIC_PRUEBA, JSON.stringify(datos), { qos: 0, retain: false });
+function publicar(datos) {
+  if (!cliente?.connected) return false;
+  const mensaje = { ...datos, nombre, clientId, timestamp: Date.now() };
+  cliente.publish(TOPIC, JSON.stringify(mensaje), { qos: 0, retain: false });
   return true;
 }
 
+function publicarMQTT(datos) {
+  return publicar(datos);
+}
 window.publicarMQTT = publicarMQTT;
 
-function cambiarEstadoConexion(tipo, texto) {
-  estadoPunto.className = "estado-punto";
-  if (tipo) estadoPunto.classList.add(tipo);
-  estadoTexto.textContent = texto;
+function publicarControl() {
+  if (estadoSesion !== "imprimiendo") return;
+  publicar({ tipo: "control", sesionId, control: leerControles() });
 }
 
-// ------------------------------------------------------------
-// REGLA 01 — geometría de la estructura XX
-// Cada viga es una curva Bézier entre un anclaje en el suelo y el ápice
-// donde cruza con la otra viga. Se combó hacia afuera a propósito: así el
-// ángulo de voladizo NO es constante y el punto más riesgoso no siempre
-// coincide con el punto más alto (como ocurre en impresión real).
-// ------------------------------------------------------------
-function construirVigas() {
-  const unidades = [-2.6, 2.6]; // centros de los dos módulos "X" → forman "XX"
-  const vigas = [];
-  unidades.forEach((cx, unidadIdx) => {
-    const apiceY = ALTURA_TOTAL;
-    // Beam A: anclaje inferior izquierdo → ápice superior derecho
-    vigas.push({
-      id: `x${unidadIdx + 1}-a`,
-      v0: new THREE.Vector3(cx - 1.6, 0, 0),
-      vc: new THREE.Vector3(cx + 2.3, apiceY * 0.55, 0),
-      v2: new THREE.Vector3(cx + 1.6, apiceY, 0),
-    });
-    // Beam B: anclaje inferior derecho → ápice superior izquierdo (cruza con A)
-    vigas.push({
-      id: `x${unidadIdx + 1}-b`,
-      v0: new THREE.Vector3(cx + 1.6, 0, 0),
-      vc: new THREE.Vector3(cx - 2.3, apiceY * 0.55, 0),
-      v2: new THREE.Vector3(cx - 1.6, apiceY, 0),
-    });
-  });
-  return vigas;
+function leerControles() {
+  return {
+    x: Number(controlX.value) / 100 * MAX_DESPLAZAMIENTO,
+    z: Number(controlZ.value) / 100 * MAX_DESPLAZAMIENTO,
+    radio: Number(controlRadio.value) / 100,
+  };
 }
 
-// Estado compartido: cuántos refuerzos ha recibido cada zona (empieza en 0
-// para todas — se llena en vivo con los mensajes MQTT del grupo).
-const refuerzosPorZona = new Map();
-const zonas = new Map(); // zonaId -> { mesh, angleDeg, alturaNorm, curva:{p0,p1} }
+function procesarMensaje(topic, payload) {
+  const texto = payload.toString();
+  console.log("Topic:", topic);
+  console.log("Mensaje recibido:", texto);
+  let m;
+  try {
+    m = JSON.parse(texto);
+    console.log("JSON parseado:", m);
+  } catch (error) {
+    console.warn("Mensaje MQTT sin JSON válido", error);
+    return;
+  }
+  if (!m?.tipo || !m.clientId) return;
+  participantes.set(m.clientId, m.nombre || "Sin nombre");
+  actualizarParticipantes();
 
-function grosorDeZona(zonaId) {
-  const n = refuerzosPorZona.get(zonaId) || 0;
-  return GROSOR_MIN + n * GROSOR_POR_REFUERZO;
+  if (m.tipo === "hola") {
+    if (m.clientId !== clientId && !m.respuestaA) publicar({ tipo: "hola", respuestaA: m.clientId });
+    if (creadorSesion === clientId && estadoSesion !== "preparada") publicarEstadoCompleto(m.clientId);
+    return;
+  }
+  if (m.tipo === "estado" && (!m.para || m.para === clientId)) return recibirEstado(m);
+  if (m.tipo === "iniciar") return comenzarSesion(m);
+  if (m.tipo === "control" && m.sesionId === sesionId) {
+    controlesParticipantes.set(m.clientId, validarControl(m.control));
+    actualizarPreview();
+    return;
+  }
+  if (m.tipo === "capa" && m.sesionId === sesionId) return recibirCapa(m.capa);
+  if (m.tipo === "finalizar" && m.sesionId === sesionId) return finalizarSesion();
+  if (m.tipo === "reinicio") prepararSesion();
 }
 
-// REGLA 02 — combina ángulo + altura + grosor en un único puntaje de riesgo (0–1)
-function riesgoDeZona(zonaId) {
-  const z = zonas.get(zonaId);
-  if (!z) return 0;
-  const anguloNorm = THREE.MathUtils.clamp(z.angleDeg / ANGULO_REF, 0, 1);
-  const grosorActual = grosorDeZona(zonaId);
-  const grosorMax = GROSOR_MIN + MAX_REFUERZOS_POR_ZONA * GROSOR_POR_REFUERZO;
-  const grosorNorm = THREE.MathUtils.clamp((grosorActual - GROSOR_MIN) / (grosorMax - GROSOR_MIN), 0, 1);
-  const riesgo = PESO_ANGULO * anguloNorm + PESO_ALTURA * z.alturaNorm + PESO_GROSOR * (1 - grosorNorm);
-  return THREE.MathUtils.clamp(riesgo, 0, 1);
+function comenzarSesion(m) {
+  if (!m.sesionId || !Number.isFinite(m.inicio)) return;
+  detenerRelojCapas();
+  sesionId = m.sesionId;
+  creadorSesion = m.creador;
+  inicioSesion = m.inicio;
+  estadoSesion = "imprimiendo";
+  capas = [capaInicial()];
+  controlesParticipantes.clear();
+  controlesParticipantes.set(clientId, leerControles());
+  actualizarMalla();
+  habilitarControles(true);
+  botonIniciar.disabled = botonExportar.disabled = true;
+  botonReiniciar.disabled = false;
+  $("#estado-sesion").textContent = "Imprimiendo";
+  publicarControl();
+  if (creadorSesion === clientId) iniciarRelojCapas();
 }
 
-const COLOR_OK = new THREE.Color(0x8fb59b);    // bajo riesgo
-const COLOR_RIESGO = new THREE.Color(0xc67f74); // alto riesgo
+function iniciarRelojCapas() {
+  relojCapas = window.setInterval(() => {
+    const transcurrido = Date.now() - inicioSesion;
+    const capasEsperadas = Math.min(CAPAS_NUEVAS, Math.floor(transcurrido / INTERVALO_CAPA_MS));
+    while (capas.length - 1 < capasEsperadas) {
+      const indice = capas.length;
+      const promedio = promedioControles();
+      publicar({
+        tipo: "capa", sesionId,
+        capa: { indice, ...promedio, y: (indice + 1) * ALTURA_CAPA },
+      });
+      // Se agrega ahora para que un intervalo retrasado no publique dos veces el mismo índice.
+      recibirCapa({ indice, ...promedio, y: (indice + 1) * ALTURA_CAPA });
+    }
+    if (transcurrido >= DURACION_MS && capas.length >= TOTAL_CAPAS) {
+      publicar({ tipo: "finalizar", sesionId });
+      finalizarSesion();
+    }
+  }, 100);
+}
 
-// ------------------------------------------------------------
-// ESCENA 3D
-// ------------------------------------------------------------
-let escena, camara, renderer, controles, grupoEstructura, raycaster, mouse;
+function promedioControles() {
+  const lista = [...controlesParticipantes.values()];
+  if (!lista.length) return leerControles();
+  const suma = lista.reduce((acc, valor) => ({
+    x: acc.x + valor.x, z: acc.z + valor.z, radio: acc.radio + valor.radio,
+  }), { x: 0, z: 0, radio: 0 });
+  return { x: suma.x / lista.length, z: suma.z / lista.length, radio: suma.radio / lista.length };
+}
 
+function validarControl(control = {}) {
+  return {
+    x: THREE.MathUtils.clamp(Number(control.x) || 0, -MAX_DESPLAZAMIENTO, MAX_DESPLAZAMIENTO),
+    z: THREE.MathUtils.clamp(Number(control.z) || 0, -MAX_DESPLAZAMIENTO, MAX_DESPLAZAMIENTO),
+    radio: THREE.MathUtils.clamp(Number(control.radio) || 1, 0.55, 1.45),
+  };
+}
+
+function recibirCapa(capa) {
+  if (!capa || !Number.isInteger(capa.indice) || capa.indice < 1 || capa.indice > CAPAS_NUEVAS) return;
+  capas[capa.indice] = { indice: capa.indice, ...validarControl(capa), y: (capa.indice + 1) * ALTURA_CAPA };
+  capas = capas.filter(Boolean).sort((a, b) => a.indice - b.indice);
+  actualizarMalla();
+}
+
+function finalizarSesion() {
+  if (estadoSesion === "finalizada") return;
+  detenerRelojCapas();
+  estadoSesion = "finalizada";
+  habilitarControles(false);
+  botonExportar.disabled = false;
+  botonIniciar.disabled = true;
+  $("#estado-sesion").textContent = "Modelo listo";
+  $("#tiempo").textContent = "0.0 s";
+  $("#progreso").style.width = "100%";
+}
+
+function prepararSesion() {
+  detenerRelojCapas();
+  sesionId = creadorSesion = null;
+  inicioSesion = 0;
+  estadoSesion = "preparada";
+  capas = [capaInicial()];
+  controlesParticipantes.clear();
+  actualizarMalla();
+  habilitarControles(false);
+  botonIniciar.disabled = !cliente?.connected;
+  botonExportar.disabled = true;
+  botonReiniciar.disabled = !cliente?.connected;
+  $("#estado-sesion").textContent = "Preparada";
+  $("#tiempo").textContent = "10.0 s";
+  $("#progreso").style.width = "0%";
+}
+
+function publicarEstadoCompleto(para) {
+  publicar({ tipo: "estado", para, sesionId, creador: creadorSesion, inicio: inicioSesion, estado: estadoSesion, capas });
+}
+
+function recibirEstado(m) {
+  if (!m.sesionId || !Array.isArray(m.capas)) return;
+  sesionId = m.sesionId;
+  creadorSesion = m.creador;
+  inicioSesion = m.inicio;
+  estadoSesion = m.estado;
+  capas = m.capas.map(capa => ({ ...capa, ...validarControl(capa) }));
+  actualizarMalla();
+  habilitarControles(estadoSesion === "imprimiendo");
+  botonIniciar.disabled = true;
+  botonExportar.disabled = estadoSesion !== "finalizada";
+  $("#estado-sesion").textContent = estadoSesion === "finalizada" ? "Modelo listo" : "Imprimiendo";
+  if (estadoSesion === "imprimiendo") publicarControl();
+}
+
+function detenerRelojCapas() {
+  if (relojCapas) window.clearInterval(relojCapas);
+  relojCapas = null;
+}
+
+function habilitarControles(activos) {
+  controlesDOM.forEach(control => { control.disabled = !activos; });
+}
+
+function actualizarSalidas() {
+  $("#salida-x").value = leerControles().x.toFixed(2);
+  $("#salida-z").value = leerControles().z.toFixed(2);
+  $("#salida-radio").value = leerControles().radio.toFixed(2);
+}
+
+function actualizarParticipantes() {
+  $("#participantes").textContent = participantes.size;
+}
+
+function cambiarConexion(tipo, texto) {
+  $("#estado-punto").className = `estado-punto${tipo ? ` ${tipo}` : ""}`;
+  $("#estado-texto").textContent = texto;
+}
+
+// ============================================================
+// GEOMETRÍA: anillos apilados que forman una malla cerrada.
+// ============================================================
+let escena, camara, renderer, controlesCamara, pieza, preview;
 iniciarEscena();
-construirVigas().forEach(agregarViga);
-recomputarTodo();
+actualizarMalla();
+actualizarSalidas();
 animar();
 
 function iniciarEscena() {
-  const c = document.querySelector("#escena-estructura");
+  const contenedor = $("#escena-impresion");
   escena = new THREE.Scene();
   escena.background = new THREE.Color(0x0b0b0c);
-  camara = new THREE.PerspectiveCamera(38, c.clientWidth / c.clientHeight, 0.1, 200);
-  camara.position.set(8.5, 6.5, 13.5);
+  escena.fog = new THREE.Fog(0x0b0b0c, 11, 24);
+  camara = new THREE.PerspectiveCamera(38, contenedor.clientWidth / contenedor.clientHeight, 0.1, 100);
+  camara.position.set(7.5, 5.8, 9.5);
   renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(contenedor.clientWidth, contenedor.clientHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.15;
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  renderer.setSize(c.clientWidth, c.clientHeight);
-  c.appendChild(renderer.domElement);
-  controles = new OrbitControls(camara, renderer.domElement);
-  controles.enableDamping = true;
-  controles.autoRotate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  controles.autoRotateSpeed = 0.28;
-  controles.target.set(0, 3, 0);
+  renderer.toneMappingExposure = 1.1;
+  contenedor.appendChild(renderer.domElement);
 
-  escena.add(new THREE.HemisphereLight(0xfff4df, 0x22252b, 1.7));
-  const luz = new THREE.DirectionalLight(0xffffff, 2.5);
-  luz.position.set(6, 10, 6);
+  controlesCamara = new OrbitControls(camara, renderer.domElement);
+  controlesCamara.enableDamping = true;
+  controlesCamara.target.set(0, 2.3, 0);
+
+  escena.add(new THREE.HemisphereLight(0xfff1d6, 0x25282d, 1.8));
+  const luz = new THREE.DirectionalLight(0xffffff, 3);
+  luz.position.set(6, 10, 7);
   escena.add(luz);
-  const contraluz = new THREE.DirectionalLight(0x8fa8c7, 1.8);
-  contraluz.position.set(-7, 5, -5);
-  escena.add(contraluz);
+  const relleno = new THREE.DirectionalLight(0x8da9c7, 1.4);
+  relleno.position.set(-6, 4, -5);
+  escena.add(relleno);
 
   const suelo = new THREE.Mesh(
-    new THREE.CircleGeometry(6.5, 48),
-    new THREE.MeshStandardMaterial({ color: 0x141517, roughness: 1 })
+    new THREE.CircleGeometry(5.5, 64),
+    new THREE.MeshStandardMaterial({ color: 0x151719, roughness: 1 }),
   );
   suelo.rotation.x = -Math.PI / 2;
   escena.add(suelo);
 
-  grupoEstructura = new THREE.Group();
-  escena.add(grupoEstructura);
+  pieza = new THREE.Mesh(
+    new THREE.BufferGeometry(),
+    new THREE.MeshStandardMaterial({ color: 0xb98b65, roughness: 0.78, metalness: 0.02, side: THREE.DoubleSide }),
+  );
+  escena.add(pieza);
 
-  raycaster = new THREE.Raycaster();
-  mouse = new THREE.Vector2();
-  let pointerDown = null;
-  renderer.domElement.addEventListener("pointerdown", e => { pointerDown = { x: e.clientX, y: e.clientY }; });
-  renderer.domElement.addEventListener("pointerup", e => {
-    if (!pointerDown) return;
-    const dist = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
-    pointerDown = null;
-    if (dist > 6) return; // fue un arrastre de la cámara, no un clic
-    seleccionarDesdePuntero(e);
+  preview = new THREE.LineLoop(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0xd8d2c4, transparent: true, opacity: 0.8 }),
+  );
+  escena.add(preview);
+}
+
+function crearGeometria(listaCapas) {
+  const anillos = [
+    { ...listaCapas[0], y: 0 },
+    ...listaCapas,
+  ];
+  const posiciones = [];
+  const indices = [];
+
+  anillos.forEach(anillo => {
+    for (let j = 0; j < SEGMENTOS_RADIALES; j++) {
+      const angulo = j / SEGMENTOS_RADIALES * Math.PI * 2;
+      posiciones.push(
+        anillo.x + Math.cos(angulo) * anillo.radio,
+        anillo.y,
+        anillo.z + Math.sin(angulo) * anillo.radio,
+      );
+    }
   });
-}
 
-function seleccionarDesdePuntero(e) {
-  const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-  mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(mouse, camara);
-  const hits = raycaster.intersectObjects(grupoEstructura.children, false);
-  if (hits.length) seleccionarZona(hits[0].object.userData.zonaId);
-}
-
-function agregarViga(viga) {
-  const curva = new THREE.QuadraticBezierCurve3(viga.v0, viga.vc, viga.v2);
-  const puntos = curva.getPoints(SEGMENTOS_POR_VIGA);
-  for (let i = 0; i < SEGMENTOS_POR_VIGA; i++) {
-    const p0 = puntos[i], p1 = puntos[i + 1];
-    const zonaId = `${viga.id}-s${i + 1}`;
-    const dir = new THREE.Vector3().subVectors(p1, p0);
-    const largo = dir.length();
-    const angleDeg = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(dir.clone().normalize().y, -1, 1)));
-    const alturaNorm = THREE.MathUtils.clamp(((p0.y + p1.y) / 2) / ALTURA_TOTAL, 0, 1);
-
-    const mesh = new THREE.Mesh(
-      new THREE.CylinderGeometry(GROSOR_MIN, GROSOR_MIN, largo, 12),
-      new THREE.MeshStandardMaterial({ color: COLOR_OK.clone(), roughness: 0.48, metalness: 0.04 })
-    );
-    mesh.position.copy(p0).lerp(p1, 0.5);
-    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
-    mesh.userData.zonaId = zonaId;
-    grupoEstructura.add(mesh);
-
-    zonas.set(zonaId, { mesh, angleDeg, alturaNorm, p0, p1, largo });
-    refuerzosPorZona.set(zonaId, 0);
-  }
-}
-
-// OUTPUT — cada vez que cambia el estado de una zona, se redibuja: color por
-// riesgo y grosor por refuerzo acumulado.
-function actualizarVisualZona(zonaId) {
-  const z = zonas.get(zonaId);
-  if (!z) return;
-  const riesgo = riesgoDeZona(zonaId);
-  const grosor = grosorDeZona(zonaId);
-
-  z.mesh.geometry.dispose();
-  z.mesh.geometry = new THREE.CylinderGeometry(grosor, grosor, z.largo, 12);
-  z.mesh.material.color.copy(COLOR_OK).lerp(COLOR_RIESGO, riesgo);
-  const seleccionada = zonaSeleccionada === zonaId;
-  z.mesh.material.emissive.set(seleccionada ? 0xd8d2c4 : 0x000000);
-  z.mesh.material.emissiveIntensity = seleccionada ? 0.42 : 0;
-
-  if (zonaSeleccionada === zonaId) mostrarInfoZona(zonaId);
-}
-
-function recomputarTodo() {
-  for (const zonaId of zonas.keys()) actualizarVisualZona(zonaId);
-  actualizarMetricas();
-}
-
-// REGLA 03 — estabilidad global = 1 - promedio del riesgo de todas las zonas
-function actualizarMetricas() {
-  const ids = [...zonas.keys()];
-  const riesgos = ids.map(riesgoDeZona);
-  const promedio = riesgos.reduce((a, b) => a + b, 0) / riesgos.length;
-  const estabilidad = Math.round((1 - promedio) * 100);
-  const riesgoAlto = riesgos.filter(r => r >= UMBRAL_RIESGO_ALTO).length;
-
-  document.querySelector("#m-estabilidad").textContent = `${estabilidad}%`;
-  document.querySelector("#m-riesgo-alto").textContent = `${riesgoAlto} / ${ids.length}`;
-  document.querySelector("#m-refuerzos").textContent = totalRefuerzos;
-}
-
-function actualizarParticipantes() {
-  document.querySelector("#m-participantes").textContent = participantes.size;
-}
-
-function seleccionarZona(zonaId) {
-  if (!zonaId) return;
-  const anterior = zonaSeleccionada;
-  zonaSeleccionada = zonaId;
-  if (anterior && anterior !== zonaId) actualizarVisualZona(anterior);
-  actualizarVisualZona(zonaId);
-  zonaVacia.hidden = true;
-  zonaInfo.hidden = false;
-  mostrarInfoZona(zonaId);
-  botonReforzar.disabled = !(cliente && cliente.connected);
-}
-
-function mostrarInfoZona(zonaId) {
-  const z = zonas.get(zonaId);
-  const riesgo = riesgoDeZona(zonaId);
-  const n = refuerzosPorZona.get(zonaId) || 0;
-  zIdTexto.textContent = zonaId;
-  zAnguloTexto.textContent = `${z.angleDeg.toFixed(0)}°`;
-  zAlturaTexto.textContent = `${(z.alturaNorm * ALTURA_TOTAL).toFixed(1)} m`;
-  zRiesgoTexto.textContent = `${Math.round(riesgo * 100)}%`;
-  zGrosorTexto.textContent = grosorDeZona(zonaId).toFixed(3);
-  zCountTexto.textContent = n;
-  zMensaje.textContent = n >= MAX_REFUERZOS_POR_ZONA ? "Esta zona ya alcanzó el refuerzo máximo." : "";
-  botonReforzar.disabled = !(cliente && cliente.connected) || n >= MAX_REFUERZOS_POR_ZONA;
-}
-
-// ------------------------------------------------------------
-// COLECTIVO — publicar y recibir refuerzos vía MQTT
-// ------------------------------------------------------------
-function publicarRefuerzo(zonaId) {
-  if (!cliente?.connected) return;
-  const mensaje = {
-    tipo: "refuerzo",
-    zonaId,
-    nombre,
-    clientId,
-    compuesto: "hueso-colageno",
-    timestamp: Date.now(),
-  };
-  cliente.publish(TOPIC_EVENTOS, JSON.stringify(mensaje), { qos: 0, retain: false });
-}
-
-function publicarHola(respuestaA = null) {
-  if (!cliente?.connected) return;
-  cliente.publish(TOPIC_EVENTOS, JSON.stringify({
-    tipo: "hola", nombre, clientId, timestamp: Date.now(), ...(respuestaA && { respuestaA }),
-  }), { qos: 0, retain: false });
-}
-
-function publicarReinicio() {
-  if (!cliente?.connected) return;
-  cliente.publish(TOPIC_EVENTOS, JSON.stringify({
-    tipo: "reinicio", nombre, clientId, timestamp: Date.now(),
-  }), { qos: 0, retain: false });
-}
-
-function procesarEvento(payload) {
-  try {
-    const m = JSON.parse(payload.toString());
-    if (!m || typeof m !== "object" || typeof m.clientId !== "string") return;
-
-    if (m.tipo === "hola") {
-      participantes.add(m.clientId);
-      actualizarParticipantes();
-      if (m.clientId !== clientId && !m.respuestaA) publicarHola(m.clientId);
-      return;
+  for (let i = 0; i < anillos.length - 1; i++) {
+    for (let j = 0; j < SEGMENTOS_RADIALES; j++) {
+      const siguiente = (j + 1) % SEGMENTOS_RADIALES;
+      const a = i * SEGMENTOS_RADIALES + j;
+      const b = i * SEGMENTOS_RADIALES + siguiente;
+      const c = (i + 1) * SEGMENTOS_RADIALES + j;
+      const d = (i + 1) * SEGMENTOS_RADIALES + siguiente;
+      indices.push(a, c, b, b, c, d);
     }
-
-    if (m.tipo === "reinicio") {
-      reiniciarEstado(m.nombre);
-      return;
-    }
-
-    if (m.tipo !== "refuerzo" || !zonas.has(m.zonaId)) return;
-
-    const actual = refuerzosPorZona.get(m.zonaId) || 0;
-    if (actual >= MAX_REFUERZOS_POR_ZONA) return;
-    refuerzosPorZona.set(m.zonaId, actual + 1);
-    totalRefuerzos += 1;
-    participantes.add(m.clientId);
-
-    actualizarVisualZona(m.zonaId);
-    actualizarMetricas();
-    actualizarParticipantes();
-    agregarAlFeed(m);
-  } catch (e) {
-    console.error("Mensaje inválido:", e);
   }
+
+  const centroInferior = posiciones.length / 3;
+  posiciones.push(anillos[0].x, anillos[0].y, anillos[0].z);
+  const centroSuperior = posiciones.length / 3;
+  const ultimo = anillos.at(-1);
+  posiciones.push(ultimo.x, ultimo.y, ultimo.z);
+  const offsetSuperior = (anillos.length - 1) * SEGMENTOS_RADIALES;
+  for (let j = 0; j < SEGMENTOS_RADIALES; j++) {
+    const siguiente = (j + 1) % SEGMENTOS_RADIALES;
+    indices.push(centroInferior, siguiente, j);
+    indices.push(centroSuperior, offsetSuperior + j, offsetSuperior + siguiente);
+  }
+
+  const geometria = new THREE.BufferGeometry();
+  geometria.setAttribute("position", new THREE.Float32BufferAttribute(posiciones, 3));
+  geometria.setIndex(indices);
+  geometria.computeVertexNormals();
+  geometria.computeBoundingSphere();
+  return geometria;
 }
 
-function reiniciarEstado(nombreAutor) {
-  for (const zonaId of zonas.keys()) refuerzosPorZona.set(zonaId, 0);
-  totalRefuerzos = 0;
-  refuerzosLista.replaceChildren();
-  const vacio = document.createElement("p");
-  vacio.className = "vacio";
-  vacio.textContent = nombreAutor ? `Demo reiniciada por ${nombreAutor}.` : "Demo reiniciada.";
-  refuerzosLista.appendChild(vacio);
-  recomputarTodo();
+function actualizarMalla() {
+  pieza.geometry.dispose();
+  pieza.geometry = crearGeometria(capas);
+  $("#capas").textContent = `${capas.length} / ${TOTAL_CAPAS}`;
+  actualizarPreview();
 }
 
-function agregarAlFeed(m) {
-  const vacio = refuerzosLista.querySelector(".vacio");
-  if (vacio) vacio.remove();
-  const hora = new Date(m.timestamp || Date.now()).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const fila = document.createElement("div");
-  fila.className = "refuerzo-fila";
-  const persona = document.createElement("span");
-  persona.textContent = m.nombre || "Sin nombre";
-  const zona = document.createElement("code");
-  zona.textContent = m.zonaId;
-  const tiempo = document.createElement("small");
-  tiempo.textContent = hora;
-  fila.append(persona, zona, tiempo);
-  refuerzosLista.prepend(fila);
-  while (refuerzosLista.children.length > 12) refuerzosLista.lastChild.remove();
+function actualizarPreview() {
+  if (!preview) return;
+  const control = estadoSesion === "imprimiendo" ? promedioControles() : leerControles();
+  const y = Math.min((capas.length + 1) * ALTURA_CAPA, (TOTAL_CAPAS + 1) * ALTURA_CAPA);
+  const puntos = [];
+  for (let j = 0; j < SEGMENTOS_RADIALES; j++) {
+    const angulo = j / SEGMENTOS_RADIALES * Math.PI * 2;
+    puntos.push(new THREE.Vector3(control.x + Math.cos(angulo) * control.radio, y, control.z + Math.sin(angulo) * control.radio));
+  }
+  preview.geometry.dispose();
+  preview.geometry = new THREE.BufferGeometry().setFromPoints(puntos);
+  preview.visible = estadoSesion !== "finalizada";
 }
 
-// ------------------------------------------------------------
+function exportarSTL() {
+  if (estadoSesion !== "finalizada") return;
+  const datos = new STLExporter().parse(pieza, { binary: true });
+  const blob = new Blob([datos], { type: "model/stl" });
+  const url = URL.createObjectURL(blob);
+  const enlace = document.createElement("a");
+  enlace.href = url;
+  enlace.download = `impresion-colectiva-${sesionId || Date.now()}.stl`;
+  enlace.click();
+  URL.revokeObjectURL(url);
+}
+
 function animar() {
   requestAnimationFrame(animar);
-  controles.update();
+  controlesCamara.update();
+  if (estadoSesion === "imprimiendo") {
+    const transcurrido = Math.max(0, Date.now() - inicioSesion);
+    const restante = Math.max(0, DURACION_MS - transcurrido);
+    $("#tiempo").textContent = `${(restante / 1_000).toFixed(1)} s`;
+    $("#progreso").style.width = `${Math.min(100, transcurrido / DURACION_MS * 100)}%`;
+  }
   renderer.render(escena, camara);
 }
 
 window.addEventListener("resize", () => {
-  const c = document.querySelector("#escena-estructura");
-  camara.aspect = c.clientWidth / c.clientHeight;
+  const contenedor = $("#escena-impresion");
+  camara.aspect = contenedor.clientWidth / contenedor.clientHeight;
   camara.updateProjectionMatrix();
-  renderer.setSize(c.clientWidth, c.clientHeight);
+  renderer.setSize(contenedor.clientWidth, contenedor.clientHeight);
 });

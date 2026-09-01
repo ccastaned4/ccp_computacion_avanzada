@@ -1,137 +1,93 @@
-# Refuerzo Estructural Colectivo
+# Impresión Colectiva
 
-Proyecto Final · Computación Avanzada · MCD UAI · 2026
+Proyecto final · Computación Avanzada · MCD UAI · 2026
 
-Artefacto computacional para el tema de tesis: **mejorar la imprimibilidad 3D en tierra de un
-biomaterial de hueso, colágeno, agua y tierra**, inspirado en referentes como la casa Gaia (WASP +
-Mario Cucinella Architects, impresión con tierra cruda local).
+Artefacto web colaborativo inspirado en el sistema MQTT de `lab-04`. Varias personas deforman en
+tiempo real una pieza que comienza como cilindro y crece como una impresión 3D: una capa por segundo
+durante diez segundos. Al terminar, la interacción se congela y la malla puede descargarse como STL.
 
-Construido sobre el starter "Sistema Colectivo" que entregó el profesor (misma base MQTT + Three.js,
-misma paleta visual), pero con geometría, reglas y payload rediseñados para este tema.
+## Arquitectura: INPUT → REGLA → ESTADO → OUTPUT
 
-## La idea
-
-Una estructura en forma de **XX** (dos módulos en cruce, cada uno hecho de dos vigas curvas que se
-cruzan) representa un elemento impreso en capas de tierra. Cada viga se divide en zonas. Cada zona
-tiene un **riesgo de falla por voladizo** calculado a partir de su geometría. Varias personas
-conectadas simultáneamente pueden inspeccionar la estructura y **reforzar colectivamente** las zonas
-más riesgosas con el compuesto (hueso + colágeno), lo que reduce su riesgo y sube la
-**estabilidad global** de la pieza — visible para todos en tiempo real.
-
-## Arquitectura (INPUT → REGLAS → ESTADO → OUTPUT)
-
-```
+```text
 INPUT
-  geometría de cada zona: ángulo de voladizo, altura, grosor
-  + acción de una persona: "reforzar zona X"
-       ↓
-REGLAS
-  REGLA 1 — riesgo = 0.5·ángulo_norm + 0.3·altura_norm + 0.2·(1 − grosor_norm)
-  REGLA 2 — cada refuerzo aumenta el grosor de la zona (hasta un máximo)
-  REGLA 3 — estabilidad global = 1 − promedio(riesgo de todas las zonas)
-       ↓
-ESTADO (compartido vía MQTT, igual para todas las personas conectadas)
-  refuerzosPorZona: cuántos refuerzos acumula cada una de las 16 zonas
-       ↓
+  cada participante controla desplazamiento X, desplazamiento Z y radio
+      ↓
+REGLA
+  una vez por segundo se promedian los controles activos
+  promedio X/Z → centro del siguiente anillo
+  promedio radio → radio del siguiente anillo
+      ↓
+ESTADO COMPARTIDO
+  sesión + secuencia ordenada de capas publicada por MQTT
+      ↓
 OUTPUT
-  color de cada zona (verde → rojo según riesgo)
-  grosor de cada zona (según refuerzos)
-  métricas colectivas: estabilidad global, zonas de riesgo alto, refuerzos totales, participantes
+  malla 3D cerrada → congelado automático a los 10 s → archivo STL
 ```
 
-## Por qué esta regla de riesgo (y no una simulación estructural real)
+## Geometría
 
-Detectar puntos débiles "de verdad" requeriría un análisis de esfuerzos (FEA) con datos físicos del
-biomaterial, fuera del alcance de un curso de computación. En su lugar usamos un **proxy geométrico
-explicable**: el ángulo de voladizo es el criterio más citado en impresión 3D en tierra/arcilla para
-saber si una capa puede sostenerse sin soporte; la altura acumulada representa el peso de las capas
-superiores; el grosor representa cuánto material reforzado ya se aplicó ahí. Los pesos (0.5 / 0.3 /
-0.2) son una decisión de diseño del equipo — se pueden ajustar y ese ajuste es, en sí mismo, parte de
-la conversación de la presentación.
+La pieza comienza con una capa cilíndrica de radio `1`. Durante la sesión se agregan diez capas, una
+cada `1000 ms`, para un total de once capas visibles. Cada capa es un anillo de 48 vértices:
 
-## Topics y payload
-
-Un solo canal para los eventos de refuerzo (broker propio, no el de la clase):
-
-```
-uai/mcd/2026/proyecto-final/bioimpresion-tierra/eventos/refuerzo
+```text
+v(j) = (centroX + cos(θj)·radio, altura, centroZ + sin(θj)·radio)
+θj   = j / 48 · 2π
 ```
 
-```json
-{
-  "tipo": "refuerzo",
-  "zonaId": "x1-b-s3",
-  "nombre": "Ceci",
-  "clientId": "navegador-ceci-A82F",
-  "compuesto": "hueso-colageno",
-  "timestamp": 1787869200000
-}
+Los anillos consecutivos se unen mediante triángulos. La base y la tapa también se triangulan, por lo
+que el resultado es una malla cerrada apta para exportar con `STLExporter` de Three.js.
+
+## Decisión colectiva
+
+Cada navegador publica su control más reciente. La persona que inicia la impresión actúa como reloj
+de la sesión y, cada segundo, calcula:
+
+```text
+centroX_capa = promedio(X de participantes activos)
+centroZ_capa = promedio(Z de participantes activos)
+radio_capa   = promedio(radio de participantes activos)
 ```
 
-Cada cliente conectado se suscribe a ese mismo topic, así que cuando alguien refuerza una zona, todas
-las personas conectadas ven el cambio de color/grosor y las métricas actualizarse al instante — eso es
-lo que hace que sea un sistema **colectivo** y no una simulación individual.
+Luego publica la capa consolidada. Así todos reciben exactamente la misma secuencia en vez de generar
+versiones locales potencialmente distintas. Si alguien entra tarde, quien inició la sesión le envía
+una instantánea con las capas ya construidas.
 
-El mismo canal admite dos eventos ligeros adicionales, sin cambiar la estructura de topics:
+## MQTT
 
-- `tipo: "hola"`: anuncia el `nombre`, `clientId` y `timestamp` al conectarse. Los clientes presentes
-  responden una vez para que quien acaba de entrar pueda contar participantes sin esperar un refuerzo.
-- `tipo: "reinicio"`: anuncia el `nombre`, `clientId` y `timestamp`; todos los clientes ponen en cero
-  los refuerzos de sus 16 zonas. Sirve para reiniciar una demostración de forma sincronizada.
-
-Los tres eventos son efímeros (`retain: false`). Por eso “Participantes” representa los navegadores que
-se han anunciado durante la sesión actual, no un sistema permanente de presencia con desconexiones.
-
-## Antes de usarlo: crea tu propio broker MQTT
-
-Este proyecto **no reutiliza el broker de la clase** (para no chocar con otros grupos ni depender de su
-cuota). Sigan el anexo del curso — *Crear un broker MQTT gratuito con EMQX Cloud* — y al terminar,
-reemplacen estas tres constantes al inicio de `main.js`:
+Broker WebSocket seguro:
 
 ```js
 const BROKER = "wss://rd7b7d2a.ala.us-east-1.emqxsl.com:8084/mqtt";
 const USUARIO = "mcd_user";
 const CONTRASENA_MQTT = "";
+const TOPIC = "mcd/prueba";
 ```
 
-La contraseña **nunca se escribe en el código** — se pide en la interfaz cuando alguien se conecta.
-La constante vacía existe solo como punto claramente identificado para pruebas locales y no debe
-subirse con una contraseña real.
+La contraseña queda vacía y normalmente se introduce en la interfaz. Nunca debe subirse al repositorio.
 
-Además, el cliente se suscribe a `mcd/prueba` para verificar mensajes generales sin intervenir en el
-estado visual. La función global `publicarMQTT(datos)` publica objetos en ese canal serializándolos
-automáticamente como JSON.
+Todos los mensajes viajan por `mcd/prueba` como JSON. Tipos utilizados:
 
-## Ejecutar en local
+- `hola`: anuncia participantes y solicita sincronización.
+- `iniciar`: define identificador, creador y tiempo inicial de la sesión.
+- `control`: comparte X, Z y radio de un participante.
+- `capa`: distribuye una capa consolidada.
+- `estado`: sincroniza a una persona que acaba de entrar.
+- `finalizar`: congela la pieza y habilita la exportación.
+- `reinicio`: devuelve todos los navegadores al cilindro inicial.
 
-Este proyecto usa ES modules e importmaps, así que necesita servirse por HTTP (no funciona abriendo
-`index.html` directamente con doble clic). Cualquiera de estas opciones sirve:
+También está disponible `publicarMQTT(datos)` en la consola del navegador para publicar objetos de
+prueba; la función aplica `JSON.stringify()` automáticamente.
 
-- VS Code + extensión Live Server → clic derecho en `index.html` → "Open with Live Server".
-- `npx serve .` desde esta carpeta.
-- `python3 -m http.server` desde esta carpeta y abrir `http://localhost:8000`.
+## Uso
 
-## Publicar en GitHub Pages
+1. Servir `lab05/` mediante Live Server u otro servidor HTTP.
+2. Abrir la URL en dos pestañas o dispositivos.
+3. Escribir nombres distintos y la misma contraseña MQTT.
+4. Conectar ambas personas.
+5. Iniciar la impresión desde una pestaña.
+6. Mover X, Z y radio en ambas durante diez segundos.
+7. Confirmar que ambas muestran la misma pieza terminada.
+8. Descargar el STL con **Exportar modelo STL**.
 
-1. Copien esta carpeta como `/project/` dentro del repositorio del curso (o de su propio repo).
-2. Push a GitHub.
-3. En **Settings → Pages**, activen Pages sobre la rama y carpeta correspondiente.
-4. Prueben la URL pública en otro computador o en una ventana de incógnito — y prueben que dos
-   pestañas conectadas a la vez se ven reforzar zonas entre sí (esa es la prueba mínima de que el
-   sistema colectivo funciona).
-
-## Parámetros ajustables
-
-Todos están comentados al inicio de `main.js`: cuántos segmentos tiene cada viga
-(`SEGMENTOS_POR_VIGA`), el ángulo que se considera riesgo máximo (`ANGULO_REF`), cuánto refuerza cada
-clic (`GROSOR_POR_REFUERZO`), el máximo de refuerzos por zona, el umbral de "riesgo alto", y los tres
-pesos de la regla de riesgo.
-
-## Siguientes pasos (si el proyecto continuara)
-
-- Reemplazar los pesos fijos de la regla de riesgo por valores calibrados con datos reales de impresión
-  del biomaterial (ensayos de voladizo máximo por mezcla hueso/colágeno/agua/tierra).
-- Persistencia del estado (retained messages o un pequeño backend) para que la estructura no se
-  reinicie cuando se recarga la página.
-- Reemplazar el clic manual por datos entrantes de un sensor o de un análisis de imagen de una
-  impresión real, conservando la misma arquitectura input → regla → estado → output.
+No hay bundler ni etapa de compilación. El proyecto sigue siendo HTML, CSS y JavaScript estático,
+compatible con GitHub Pages.
