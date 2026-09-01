@@ -71,11 +71,17 @@ botonConectar.addEventListener("click", conectar);
 botonReforzar.addEventListener("click", () => {
   if (zonaSeleccionada) publicarRefuerzo(zonaSeleccionada);
 });
+botonReiniciar.addEventListener("click", () => {
+  if (cliente?.connected && window.confirm("¿Reiniciar todas las zonas para todas las personas conectadas?")) publicarReinicio();
+});
 
 function conectar() {
   nombre = nombreInput.value.trim();
   const contrasena = contrasenaInput.value;
   if (!nombre || !contrasena) return cambiarEstadoConexion("error", "Falta nombre o contraseña");
+  if (BROKER.includes("TU-HOST") || USUARIO === "TU-USUARIO") {
+    return cambiarEstadoConexion("error", "Falta configurar Host y Username de EMQX en main.js");
+  }
 
   const slug = nombre.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "usuario";
   const idCorto = Math.random().toString(16).slice(2, 6).toUpperCase();
@@ -91,18 +97,34 @@ function conectar() {
     cambiarEstadoConexion("conectado", "Conectado a EMQX");
     botonConectar.textContent = "Conectado ✓";
     botonConectar.classList.add("conectado");
+    botonReiniciar.disabled = false;
     participantes.add(clientId);
     actualizarParticipantes();
     if (zonaSeleccionada) botonReforzar.disabled = false;
     cliente.subscribe(TOPIC_EVENTOS, error => {
-      if (error) console.error("Error al suscribirse:", error);
+      if (error) {
+        console.error("Error al suscribirse:", error);
+        cambiarEstadoConexion("error", "Conectado, pero no fue posible suscribirse al canal");
+        return;
+      }
+      publicarHola();
     });
   });
 
   cliente.on("message", (topic, payload) => procesarEvento(payload));
   cliente.on("reconnect", () => cambiarEstadoConexion("conectando", "Reconectando…"));
-  cliente.on("offline", () => cambiarEstadoConexion("error", "Sin conexión"));
-  cliente.on("error", error => { console.error(error); cambiarEstadoConexion("error", "Error de conexión"); });
+  cliente.on("offline", () => {
+    botonReforzar.disabled = true;
+    botonReiniciar.disabled = true;
+    cambiarEstadoConexion("error", "Sin conexión; se intentará reconectar");
+  });
+  cliente.on("error", error => {
+    console.error(error);
+    const detalle = /not authorized|bad user|password|connack/i.test(error.message)
+      ? "Usuario o contraseña MQTT incorrectos"
+      : `No se pudo conectar: ${error.message || "revisa el Host y tu conexión"}`;
+    cambiarEstadoConexion("error", detalle);
+  });
 }
 
 function cambiarEstadoConexion(tipo, texto) {
@@ -342,9 +364,37 @@ function publicarRefuerzo(zonaId) {
   cliente.publish(TOPIC_EVENTOS, JSON.stringify(mensaje), { qos: 0, retain: false });
 }
 
+function publicarHola(respuestaA = null) {
+  if (!cliente?.connected) return;
+  cliente.publish(TOPIC_EVENTOS, JSON.stringify({
+    tipo: "hola", nombre, clientId, timestamp: Date.now(), ...(respuestaA && { respuestaA }),
+  }), { qos: 0, retain: false });
+}
+
+function publicarReinicio() {
+  if (!cliente?.connected) return;
+  cliente.publish(TOPIC_EVENTOS, JSON.stringify({
+    tipo: "reinicio", nombre, clientId, timestamp: Date.now(),
+  }), { qos: 0, retain: false });
+}
+
 function procesarEvento(payload) {
   try {
     const m = JSON.parse(payload.toString());
+    if (!m || typeof m !== "object" || typeof m.clientId !== "string") return;
+
+    if (m.tipo === "hola") {
+      participantes.add(m.clientId);
+      actualizarParticipantes();
+      if (m.clientId !== clientId && !m.respuestaA) publicarHola(m.clientId);
+      return;
+    }
+
+    if (m.tipo === "reinicio") {
+      reiniciarEstado(m.nombre);
+      return;
+    }
+
     if (m.tipo !== "refuerzo" || !zonas.has(m.zonaId)) return;
 
     const actual = refuerzosPorZona.get(m.zonaId) || 0;
@@ -362,13 +412,30 @@ function procesarEvento(payload) {
   }
 }
 
+function reiniciarEstado(nombreAutor) {
+  for (const zonaId of zonas.keys()) refuerzosPorZona.set(zonaId, 0);
+  totalRefuerzos = 0;
+  refuerzosLista.replaceChildren();
+  const vacio = document.createElement("p");
+  vacio.className = "vacio";
+  vacio.textContent = nombreAutor ? `Demo reiniciada por ${nombreAutor}.` : "Demo reiniciada.";
+  refuerzosLista.appendChild(vacio);
+  recomputarTodo();
+}
+
 function agregarAlFeed(m) {
   const vacio = refuerzosLista.querySelector(".vacio");
   if (vacio) vacio.remove();
   const hora = new Date(m.timestamp || Date.now()).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const fila = document.createElement("div");
   fila.className = "refuerzo-fila";
-  fila.innerHTML = `<span>${m.nombre || "Sin nombre"}</span><code>${m.zonaId}</code><small>${hora}</small>`;
+  const persona = document.createElement("span");
+  persona.textContent = m.nombre || "Sin nombre";
+  const zona = document.createElement("code");
+  zona.textContent = m.zonaId;
+  const tiempo = document.createElement("small");
+  tiempo.textContent = hora;
+  fila.append(persona, zona, tiempo);
   refuerzosLista.prepend(fila);
   while (refuerzosLista.children.length > 12) refuerzosLista.lastChild.remove();
 }
