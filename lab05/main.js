@@ -10,12 +10,15 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 // ESTADO     → refuerzosPorZona (compartido entre todas las personas conectadas)
 // OUTPUT     → color/grosor de cada zona + estabilidad global de la estructura
 //
-// EDITA ESTAS TRES CONSTANTES con los datos de TU propio deployment EMQX
+// DATOS DE CONEXIÓN del deployment EMQX. La contraseña queda vacía para
+// completarla manualmente o ingresarla en la interfaz en tiempo de ejecución.
 // (ver Anexo · Crear un broker MQTT gratuito con EMQX Cloud). No subas la
 // contraseña al repositorio: se pide en la interfaz en tiempo de ejecución.
 // ============================================================
-const BROKER = "wss://TU-HOST:8084/mqtt";
-const USUARIO = "TU-USUARIO";
+const BROKER = "wss://rd7b7d2a.ala.us-east-1.emqxsl.com:8084/mqtt";
+const USUARIO = "mcd_user";
+const CONTRASENA_MQTT = ""; // Escribe aquí la contraseña solo para pruebas locales. No la subas al repo.
+const TOPIC_PRUEBA = "mcd/prueba";
 const TOPIC_BASE = "uai/mcd/2026/proyecto-final/bioimpresion-tierra";
 const TOPIC_EVENTOS = `${TOPIC_BASE}/eventos/refuerzo`;
 
@@ -77,7 +80,7 @@ botonReiniciar.addEventListener("click", () => {
 
 function conectar() {
   nombre = nombreInput.value.trim();
-  const contrasena = contrasenaInput.value;
+  const contrasena = CONTRASENA_MQTT || contrasenaInput.value;
   if (!nombre || !contrasena) return cambiarEstadoConexion("error", "Falta nombre o contraseña");
   if (BROKER.includes("TU-HOST") || USUARIO === "TU-USUARIO") {
     return cambiarEstadoConexion("error", "Falta configurar Host y Username de EMQX en main.js");
@@ -94,6 +97,7 @@ function conectar() {
   cliente = window.mqtt.connect(BROKER, { clientId, username: USUARIO, password: contrasena, reconnectPeriod: 2000, connectTimeout: 10000, clean: true });
 
   cliente.on("connect", () => {
+    console.log("Estado de conexión MQTT: conectado");
     cambiarEstadoConexion("conectado", "Conectado a EMQX");
     botonConectar.textContent = "Conectado ✓";
     botonConectar.classList.add("conectado");
@@ -101,7 +105,7 @@ function conectar() {
     participantes.add(clientId);
     actualizarParticipantes();
     if (zonaSeleccionada) botonReforzar.disabled = false;
-    cliente.subscribe(TOPIC_EVENTOS, error => {
+    cliente.subscribe([TOPIC_EVENTOS, TOPIC_PRUEBA], error => {
       if (error) {
         console.error("Error al suscribirse:", error);
         cambiarEstadoConexion("error", "Conectado, pero no fue posible suscribirse al canal");
@@ -111,21 +115,50 @@ function conectar() {
     });
   });
 
-  cliente.on("message", (topic, payload) => procesarEvento(payload));
-  cliente.on("reconnect", () => cambiarEstadoConexion("conectando", "Reconectando…"));
+  cliente.on("message", (topic, payload) => {
+    if (topic === TOPIC_PRUEBA) registrarMensajeMQTT(topic, payload);
+    if (topic === TOPIC_EVENTOS) procesarEvento(payload);
+  });
+  cliente.on("reconnect", () => {
+    console.log("Estado de conexión MQTT: reconectando");
+    cambiarEstadoConexion("conectando", "Reconectando…");
+  });
   cliente.on("offline", () => {
+    console.log("Estado de conexión MQTT: sin conexión");
     botonReforzar.disabled = true;
     botonReiniciar.disabled = true;
     cambiarEstadoConexion("error", "Sin conexión; se intentará reconectar");
   });
   cliente.on("error", error => {
-    console.error(error);
+    console.error("Estado de conexión MQTT: error", error);
     const detalle = /not authorized|bad user|password|connack/i.test(error.message)
       ? "Usuario o contraseña MQTT incorrectos"
       : `No se pudo conectar: ${error.message || "revisa el Host y tu conexión"}`;
     cambiarEstadoConexion("error", detalle);
   });
 }
+
+function registrarMensajeMQTT(topic, payload) {
+  const mensaje = payload.toString();
+  console.log("Topic:", topic);
+  console.log("Mensaje recibido:", mensaje);
+  try {
+    console.log("JSON parseado:", JSON.parse(mensaje));
+  } catch {
+    console.log("JSON parseado: el mensaje no contiene JSON válido");
+  }
+}
+
+function publicarMQTT(datos) {
+  if (!cliente?.connected) {
+    console.error("Estado de conexión MQTT: no conectado; no se pudo publicar");
+    return false;
+  }
+  cliente.publish(TOPIC_PRUEBA, JSON.stringify(datos), { qos: 0, retain: false });
+  return true;
+}
+
+window.publicarMQTT = publicarMQTT;
 
 function cambiarEstadoConexion(tipo, texto) {
   estadoPunto.className = "estado-punto";

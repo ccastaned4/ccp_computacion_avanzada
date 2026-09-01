@@ -89,11 +89,18 @@ cuota). Sigan el anexo del curso — *Crear un broker MQTT gratuito con EMQX Clo
 reemplacen estas tres constantes al inicio de `main.js`:
 
 ```js
-const BROKER = "wss://TU-HOST:8084/mqtt";
-const USUARIO = "TU-USUARIO";
+const BROKER = "wss://rd7b7d2a.ala.us-east-1.emqxsl.com:8084/mqtt";
+const USUARIO = "mcd_user";
+const CONTRASENA_MQTT = "";
 ```
 
 La contraseña **nunca se escribe en el código** — se pide en la interfaz cuando alguien se conecta.
+La constante vacía existe solo como punto claramente identificado para pruebas locales y no debe
+subirse con una contraseña real.
+
+Además, el cliente se suscribe a `mcd/prueba` para verificar mensajes generales sin intervenir en el
+estado visual. La función global `publicarMQTT(datos)` publica objetos en ese canal serializándolos
+automáticamente como JSON.
 
 ## Ejecutar en local
 
