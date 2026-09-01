@@ -39,27 +39,24 @@
     </div>
     <div class="progreso" aria-hidden="true"><span id="progreso"></span></div>
 
-    <div class="escena-wrap">
-      <div id="escena-impresion" class="escena" aria-label="Modelo tridimensional colectivo"></div>
-      <div class="ayuda-escena"><b>Arrastra el punto</b><span>Rueda: cambia el ancho · fondo: orbita la cámara</span></div>
-    </div>
+    <div id="escena-impresion" class="escena" aria-label="Modelo tridimensional colectivo"></div>
 
-    <div class="herramientas">
+    <div class="controles">
       <div class="control-fila">
-        <div><label for="control-espesor">Espesor de capa</label><output id="salida-espesor">0.42</output></div>
-        <input id="control-espesor" type="range" min="20" max="65" value="42" disabled>
+        <div><label for="control-x">Desplazamiento X</label><output id="salida-x">0.00</output></div>
+        <input id="control-x" type="range" min="-100" max="100" value="0" disabled>
       </div>
-      <div class="formas" aria-label="Geometría inicial">
-        <span>Geometría inicial</span>
-        <div>
-          <button class="forma activa" data-forma="circular" aria-pressed="true">Cilindro</button>
-          <button class="forma" data-forma="cuadrada" aria-pressed="false">Cuadrada</button>
-          <button class="forma" data-forma="hexagonal" aria-pressed="false">Hexagonal</button>
-        </div>
+      <div class="control-fila">
+        <div><label for="control-z">Desplazamiento Z</label><output id="salida-z">0.00</output></div>
+        <input id="control-z" type="range" min="-100" max="100" value="0" disabled>
+      </div>
+      <div class="control-fila">
+        <div><label for="control-radio">Radio de la próxima capa</label><output id="salida-radio">1.00</output></div>
+        <input id="control-radio" type="range" min="55" max="145" value="100" disabled>
       </div>
     </div>
 
-    <p class="nota">Cada segundo se promedian la posición, el ancho y el espesor elegidos por las personas conectadas. La línea luminosa anticipa la próxima capa.</p>
+    <p class="nota">Cada segundo se promedian los controles activos y se fija una nueva capa. La línea luminosa anticipa el siguiente punto de control.</p>
     <div class="acciones">
       <button id="boton-iniciar" disabled>Iniciar impresión de 10 segundos</button>
       <button id="boton-exportar" class="boton-secundario" disabled>Exportar modelo STL</button>
@@ -70,8 +67,8 @@
   <section class="panel">
     <div class="panel-titulo"><span>03</span><h2>Cómo se genera la forma</h2></div>
     <div class="reglas">
-      <div><b>INPUT</b><p>Arrastre, rueda y espesor enviados por cada participante.</p></div>
-      <div><b>REGLA</b><p>Promedio colectivo → posición, ancho y altura de la siguiente capa.</p></div>
+      <div><b>INPUT</b><p>X, Z y radio enviados por cada participante.</p></div>
+      <div><b>REGLA</b><p>Promedio colectivo → punto central de la siguiente capa.</p></div>
       <div><b>ESTADO</b><p>Una secuencia compartida de 11 anillos.</p></div>
       <div><b>OUTPUT</b><p>Malla cerrada y exportable como STL.</p></div>
     </div>
